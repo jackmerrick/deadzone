@@ -1,6 +1,10 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="utf-8">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>Dead Zone</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -1542,8 +1546,8 @@ function advanceLevel(){
   } else {
     setupMapObjects();
   }
-  // Each round starts in the dark with a fresh flashlight battery
-  lightsOn=false;player.flashLen=290;player.flashAngle=Math.PI/3.8;player.battery=player.batteryMax;
+  // Each round starts in the dark; the flashlight battery is NOT refilled — it keeps draining across the run
+  lightsOn=false;player.flashLen=290;player.flashAngle=Math.PI/3.8;
   player.lastStand=false;player.invincible=0;
   player.hp=Math.min(player.hp+20,player.maxHp);
   bullets=[];grenadeObjects=[];firePatches=[];particles=[];
