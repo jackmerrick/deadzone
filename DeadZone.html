@@ -368,6 +368,7 @@ const SHOP_ITEMS_BY_TAB={
     {id:'shotgun',   name:'Shotgun',     cost:500, type:'weapon',desc:'Wide spread, close range'},
     {id:'rifle',     name:'Assault Rifle',cost:750,type:'weapon',desc:'Fast, accurate'},
     {id:'sniper',    name:'Sniper Rifle',cost:1200,type:'weapon',desc:'High damage, slow fire'},
+    {id:'rocket',    name:'Rocket Launcher',cost:2500,type:'weapon',desc:'Explosive AoE rounds'},
   ],
   grenades:[
     {id:'frag',      name:'Frag x2',    cost:300, type:'grenade',desc:'Timed explosion — G to throw, Q to cycle'},
@@ -382,6 +383,7 @@ const SHOP_ITEMS_BY_TAB={
     {id:'ammoShotgun',name:'SG Ammo',   cost:150, type:'ammo',  desc:'+24 shotgun shells (more with Ammo Cap upgrade)'},
     {id:'ammoRifle',  name:'AR Ammo',   cost:200, type:'ammo',  desc:'+40 rifle rounds (more with Ammo Cap upgrade)'},
     {id:'ammoSniper', name:'Sniper Ammo',cost:250,type:'ammo',  desc:'+15 sniper rounds (more with Ammo Cap upgrade)'},
+    {id:'ammoRocket', name:'Rocket Ammo',cost:400,type:'ammo',  desc:'+5 rockets (more with Ammo Cap upgrade)'},
   ],
 };
 function getTabItems(){return SHOP_ITEMS_BY_TAB[activeTab]||[];}
@@ -392,7 +394,7 @@ function buyItem(item){
   currency-=item.cost;
   if(item.type==='weapon'){
     if(!player.weapons.includes(item.id))player.weapons.push(item.id);
-    const base={shotgun:24,rifle:40,sniper:15}[item.id]||0;
+    const base={shotgun:24,rifle:40,sniper:15,rocket:5}[item.id]||0;
     player.ammo[item.id]=(player.ammo[item.id]||0)+getAmmoBonus(item.id,base);
     player.weapon=item.id;
     addNotif(`Bought ${item.name}!`,'#2ecc71',2);
@@ -406,7 +408,7 @@ function buyItem(item){
     player.maxArmourHp=Math.max(player.maxArmourHp,player.armourHp);
     addNotif(`Armour equipped!`,'#4488ff',2);
   } else if(item.type==='ammo'){
-    const map={ammoShotgun:['shotgun',24],ammoRifle:['rifle',40],ammoSniper:['sniper',15]};
+    const map={ammoShotgun:['shotgun',24],ammoRifle:['rifle',40],ammoSniper:['sniper',15],ammoRocket:['rocket',5]};
     const[w,n]=map[item.id]||[];
     if(w){const actual=getAmmoBonus(w,n);player.ammo[w]=(player.ammo[w]||0)+actual;addNotif(`+${actual} ${w} ammo`,'#aaa',2);}
   }
@@ -455,8 +457,9 @@ const WEAPONS={
   rifle:     {dmg:42, cd:0.18,spd:950, spread:0.018, pellets:1,color:'#44ccff'},
   sniper:    {dmg:130,cd:1.2, spd:1400,spread:0.005, pellets:1,color:'#ff44ff'},
   machinegun:{dmg:22, cd:0.06,spd:780, spread:0.055, pellets:1,color:'#ffcc44'},
+  rocket:    {dmg:160,cd:1.1, spd:560, spread:0.02,  pellets:1,color:'#ff6a00',explosive:true,blast:130,br:7},
 };
-const ALL_WEAPONS=['knife','pistol','shotgun','rifle','sniper','machinegun'];
+const ALL_WEAPONS=['knife','pistol','shotgun','rifle','sniper','machinegun','rocket'];
 let bullets=[],lastShot=0;
 function shoot(){
   if(player.lastStand&&player.weapon!=='pistol')return;
@@ -470,7 +473,7 @@ function shoot(){
   if(player.ammo[player.weapon]<=0)return;
   lastShot=now;
   if(player.weapon!=='pistol')player.ammo[player.weapon]--;
-  for(let i=0;i<w.pellets;i++){const a=player.angle+rand(-w.spread,w.spread);bullets.push({x:player.x,y:player.y,vx:Math.cos(a)*w.spd,vy:Math.sin(a)*w.spd,dmg:w.dmg,life:w.life||1.6,color:w.color,fromPlayer:true});}
+  for(let i=0;i<w.pellets;i++){const a=player.angle+rand(-w.spread,w.spread);bullets.push({x:player.x,y:player.y,vx:Math.cos(a)*w.spd,vy:Math.sin(a)*w.spd,dmg:w.dmg,life:w.life||1.6,color:w.color,fromPlayer:true,explosive:w.explosive,blast:w.blast,br:w.br});}
   spawnMuzzle(player.x+Math.cos(player.angle)*22,player.y+Math.sin(player.angle)*22,player.angle);
   addShake(3.5,0.1);
 }
@@ -509,8 +512,12 @@ function updateGrenades(dt){
   grenadeObjects=grenadeObjects.filter(g=>{g.x+=g.vx*dt;g.y+=g.vy*dt;g.vx*=0.9;g.vy*=0.9;if(isWall(g.x,g.y)){g.vx*=-0.5;g.vy*=-0.5;}g.timer-=dt;if(g.timer<=0&&!g.exploded){g.exploded=true;explodeGrenade(g);return false;}return !g.exploded;});
   firePatches=firePatches.filter(f=>{f.timer-=dt;enemies.forEach(e=>{if(!e.alive)return;if(Math.hypot(e.x-f.x,e.y-f.y)<f.radius+e.r){e.hp-=20*dt;if(e.hp<=0)killEnemy(e);}});return f.timer>0;});
 }
+function explodeAt(x,y,radius,dmg,shake){
+  spawnExplosion(x,y,Math.max(12,Math.round(radius/5)));addShake(shake||10,0.35);
+  enemies.forEach(e=>{if(!e.alive)return;const d=Math.hypot(e.x-x,e.y-y);if(d<radius+e.r){e.hp-=dmg*(1-d/(radius+e.r));if(e.hp<=0)killEnemy(e);}});
+}
 function explodeGrenade(g){
-  if(g.type==='frag'){spawnExplosion(g.x,g.y,25);addShake(10,0.35);enemies.forEach(e=>{if(!e.alive)return;const d=Math.hypot(e.x-g.x,e.y-g.y);if(d<120){e.hp-=150*(1-d/120);if(e.hp<=0)killEnemy(e);}});}
+  if(g.type==='frag'){explodeAt(g.x,g.y,120,150);}
   else if(g.type==='molotov'){spawnExplosion(g.x,g.y,10);firePatches.push({x:g.x,y:g.y,radius:70,timer:5});}
   else if(g.type==='flashbang'){spawnExplosion(g.x,g.y,8);enemies.forEach(e=>{if(!e.alive)return;if(Math.hypot(e.x-g.x,e.y-g.y)<200)e.stunned=3.0;});}
 }
@@ -726,8 +733,8 @@ function drawPlayer(camX,camY){
 function updateBullets(dt){
   bullets=bullets.filter(b=>{
     b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
-    if(b.life<=0||isWall(b.x,b.y)){if(isWall(b.x,b.y))spawnBlood(b.x,b.y,3,'#888');return false;}
-    if(b.fromPlayer){for(const e of enemies){if(!e.alive)continue;if(dist(b,e)<e.r+4){spawnBlood(b.x,b.y,6);e.hp-=b.dmg;if(e.hp<=0)killEnemy(e);return false;}}}
+    if(b.life<=0||isWall(b.x,b.y)){if(b.explosive)explodeAt(b.x,b.y,b.blast,b.dmg);else if(isWall(b.x,b.y))spawnBlood(b.x,b.y,3,'#888');return false;}
+    if(b.fromPlayer){for(const e of enemies){if(!e.alive)continue;if(dist(b,e)<e.r+(b.br||4)){if(b.explosive){explodeAt(b.x,b.y,b.blast,b.dmg);}else{spawnBlood(b.x,b.y,6);e.hp-=b.dmg;if(e.hp<=0)killEnemy(e);}return false;}}}
     else{if(dist(b,player)<player.radius+(b.br||4)){if(player.invincible<=0){takeDamage(b.dmg);player.invincible=0.3;addShake(6,0.2);}spawnBlood(b.x,b.y,4,'#880088');return false;}}
     return true;
   });
