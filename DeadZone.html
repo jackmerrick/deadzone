@@ -829,6 +829,8 @@ function killEnemy(e){
   sessionKills++;
   sessionCoins+=e.type==='boss'?100:(1+Math.floor(e.val/100));
   spawnBlood(e.x,e.y,14);addShake(4.5,0.15);
+  // Random loot drop (drop rate itself is randomised per kill)
+  if(e.type!=='boss'&&Math.random()<rand(0.10,0.25))dropRandomLoot(e.x,e.y);
   // Boss rewards: a machine gun, plus a big cash drop on levels 5/10/15
   if(e.type==='boss'){
     spawnExplosion(e.x,e.y,30);addShake(12,0.5);
@@ -910,17 +912,33 @@ function drawBullets(camX,camY){
 
 // ── Pickups ────────────────────────────────────────────────────────────────
 let pickups=[];
-function spawnPickup(type,x,y,amount){
+function spawnPickup(type,x,y,amount,extra){
   let px=x,py=y;if(isWall(px,py)){px=player.x+rand(-80,80);py=player.y+rand(-80,80);}
   // Boss loot (gun/cash) sticks around far longer than a health drop
   const life=(type==='machinegun'||type==='cash')?90:20;
-  pickups.push({x:px,y:py,type,amount:amount||0,life,pulse:0});
+  pickups.push({x:px,y:py,type,amount:amount||0,life,pulse:0,...(extra||{})});
+}
+function dropAmmoPickup(x,y){
+  const pool=player.weapons.filter(w=>!WEAPONS[w].melee&&w!=='pistol');
+  if(pool.length){const w=pool[randInt(0,pool.length-1)];const amt={shotgun:12,rifle:24,sniper:8,machinegun:50,rocket:2}[w]||12;spawnPickup('ammo',x,y,amt,{weapon:w});}
+  else spawnPickup('cash',x,y,60);
+}
+function dropRandomLoot(x,y){
+  const r=Math.random();
+  if(r<0.30)spawnPickup('health',x,y);
+  else if(r<0.50)spawnPickup('armour',x,y,Math.round(rand(20,40)));
+  else if(r<0.75)dropAmmoPickup(x,y);
+  else if(r<0.90)spawnPickup('grenade',x,y,1,{gtype:['frag','molotov','flashbang'][randInt(0,2)]});
+  else spawnPickup('cash',x,y,100);
 }
 function updatePickups(dt){pickups=pickups.filter(p=>{
   p.life-=dt;p.pulse+=dt*3.5;
   if(dist(p,player)<player.radius+20){
     if(p.type==='health'){player.hp=Math.min(player.maxHp,player.hp+40);spawnBlood(p.x,p.y,6,'#22cc55');addNotif('+40 HP','#2ecc71',1.5);}
     else if(p.type==='cash'){currency+=p.amount;spawnExplosion(p.x,p.y,12);addShake(6,0.2);addNotif(`💰 +£${p.amount} cash drop!`,'#ffd700',3);}
+    else if(p.type==='armour'){player.armourHp=Math.min(player.armourHp+p.amount,200);player.maxArmourHp=Math.max(player.maxArmourHp,player.armourHp);addNotif(`🛡 +${p.amount} armour`,'#4488ff',1.8);}
+    else if(p.type==='ammo'){if(player.weapons.includes(p.weapon)){const n=getAmmoBonus(p.weapon,p.amount);player.ammo[p.weapon]=(player.ammo[p.weapon]||0)+n;addNotif(`+${n} ${p.weapon} ammo`,'#ffcc44',1.8);}else{currency+=40;addNotif('💰 +£40','#ffd700',1.5);}}
+    else if(p.type==='grenade'){player.grenades[p.gtype]=(player.grenades[p.gtype]||0)+p.amount;addNotif(`+${p.amount} ${p.gtype}`,'#aaffaa',1.8);}
     else if(p.type==='machinegun'){
       if(!player.weapons.includes('machinegun'))player.weapons.push('machinegun');
       player.ammo.machinegun=(player.ammo.machinegun||0)+getAmmoBonus('machinegun',120);
@@ -940,8 +958,17 @@ function drawPickups(camX,camY){
   } else if(p.type==='machinegun'){
     ctx.shadowColor='#ffcc44';ctx.shadowBlur=22;ctx.font='28px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🔫',0,0);ctx.shadowBlur=0;ctx.textBaseline='alphabetic';
     ctx.fillStyle='#ffcc44';ctx.font='bold 9px Courier New';ctx.fillText('MACHINE GUN',0,24);
+  } else if(p.type==='armour'){
+    ctx.fillStyle='#4488ff';ctx.shadowColor='#4488ff';ctx.shadowBlur=18;
+    ctx.beginPath();ctx.moveTo(0,-12);ctx.lineTo(10,-7);ctx.lineTo(10,4);ctx.lineTo(0,12);ctx.lineTo(-10,4);ctx.lineTo(-10,-7);ctx.closePath();ctx.fill();ctx.shadowBlur=0;
+  } else if(p.type==='ammo'){
+    ctx.fillStyle='#ffcc44';ctx.shadowColor='#ffcc44';ctx.shadowBlur=16;
+    ctx.fillRect(-9,-6,5,12);ctx.fillRect(-2,-6,5,12);ctx.fillRect(5,-6,5,12);ctx.shadowBlur=0;
+  } else if(p.type==='grenade'){
+    ctx.fillStyle='#88cc44';ctx.shadowColor='#88cc44';ctx.shadowBlur=16;
+    ctx.beginPath();ctx.arc(0,2,8,0,Math.PI*2);ctx.fill();ctx.fillStyle='#556b2f';ctx.fillRect(-3,-10,6,5);ctx.shadowBlur=0;
   } else {
-    ctx.fillStyle='#ff3366';ctx.shadowColor='#ff3366';ctx.shadowBlur=18;
+    ctx.fillStyle='#33dd66';ctx.shadowColor='#33dd66';ctx.shadowBlur=18;
     ctx.fillRect(-10,-4,20,8);ctx.fillRect(-4,-10,8,20);ctx.shadowBlur=0;
   }
   ctx.restore();});
