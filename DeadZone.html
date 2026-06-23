@@ -686,11 +686,7 @@ function updatePlayer(dt){
   if((mouse.down||keys[' '])&&!uiOpen)shoot();
   if(player.invincible>0)player.invincible-=dt;
   if(!player.lastStand&&!uiOpen){
-    if(keys['1'])player.weapon='pistol';
-    if(keys['2']&&player.weapons.includes('shotgun'))player.weapon='shotgun';
-    if(keys['3']&&player.weapons.includes('rifle'))player.weapon='rifle';
-    if(keys['4']&&player.weapons.includes('sniper'))player.weapon='sniper';
-    if(keys['5']&&player.weapons.includes('machinegun'))player.weapon='machinegun';
+    for(let wi=0;wi<ALL_WEAPONS.length;wi++){if(keys[String(wi+1)]&&player.weapons.includes(ALL_WEAPONS[wi]))player.weapon=ALL_WEAPONS[wi];}
   }
 }
 function drawPlayer(camX,camY){
@@ -846,17 +842,19 @@ function drawHUD(){
     ctx.strokeStyle='#224';ctx.strokeRect(18,H-38,206,12);
     ctx.fillStyle='#aac';ctx.font='8px Courier New';ctx.textAlign='center';ctx.fillText(`ARM ${Math.ceil(player.armourHp)}/${player.maxArmourHp}`,121,H-29);
   }
-  // Weapon bar (5 slots)
-  ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(W-238,H-60,224,46);
+  // Weapon bar (dynamic slot count)
+  const wn=ALL_WEAPONS.length,wsW=42,wsGap=2,wbW=wn*(wsW+wsGap)+12,wbX=W-14-wbW;
+  ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(wbX,H-60,wbW,46);
   ctx.fillStyle='#fff';ctx.font='bold 13px Courier New';ctx.textAlign='right';
   ctx.fillText(`[ ${player.weapon.toUpperCase()} ]  ${player.weapon==='pistol'?'∞':player.ammo[player.weapon]}`,W-16,H-43);
   ALL_WEAPONS.forEach((w,i)=>{
     const has=player.weapons.includes(w);
     const upgraded=has&&Object.values(weaponUpgrades[w]||{}).some(v=>v>0);
+    const sx=wbX+6+i*(wsW+wsGap);
     ctx.fillStyle=player.weapon===w?WEAPONS[w].color:(has?'#555':'#1a1a1a');
-    ctx.fillRect(W-234+i*44,H-30,42,12);
+    ctx.fillRect(sx,H-30,wsW,12);
     ctx.fillStyle=has?'#ccc':'#333';ctx.font='8px Courier New';ctx.textAlign='center';
-    ctx.fillText(`[${i+1}]${w.substring(0,3).toUpperCase()}${upgraded?'+':''}`,W-234+i*44+21,H-21);
+    ctx.fillText(`[${i+1}]${w.substring(0,3).toUpperCase()}${upgraded?'+':''}`,sx+wsW/2,H-21);
   });
   // Grenades
   const gcols={frag:'#aaa',molotov:'#cc4400',flashbang:'#aaaaff'};
