@@ -350,9 +350,21 @@ const SWITCH_POS={city:{tx:15,ty:8},bunker:{tx:12,ty:15},wasteland:{tx:14,ty:14}
 const PERK_POS=[{tx:4,ty:4},{tx:26,ty:4},{tx:4,ty:26},{tx:26,ty:26}];
 const BARRICADE_POS={city:[{tx:8,ty:2,h:true},{tx:2,ty:8,h:false}],bunker:[{tx:11,ty:7,h:true},{tx:21,ty:14,h:false}],wasteland:[{tx:7,ty:7,h:true},{tx:22,ty:18,h:false}],graveyard:[{tx:6,ty:6,h:true},{tx:20,ty:20,h:false}],arctic:[{tx:9,ty:4,h:true},{tx:23,ty:19,h:false}]};
 
+function randomSwitchTile(){
+  const cx=Math.floor(MAP_W/2),cy=Math.floor(MAP_H/2);
+  for(let i=0;i<500;i++){
+    const tx=randInt(2,MAP_W-3),ty=randInt(2,MAP_H-3);
+    if(isWall(tx*TILE+TILE/2,ty*TILE+TILE/2))continue;
+    if(Math.hypot(tx-cx,ty-cy)<7)continue;      // keep away from the central spawn
+    if(Math.hypot(tx-27,ty-27)<3)continue;      // not on the shop
+    if(Math.hypot(tx-7,ty-11)<3)continue;       // not on the workshop
+    return{tx,ty};
+  }
+  return SWITCH_POS[mapCfg.id]||{tx:15,ty:8};
+}
 function setupMapObjects(){
-  if(globalLevel>=2){const sp=SWITCH_POS[mapCfg.id]||{tx:15,ty:15};lightsSwitch={x:sp.tx*TILE+TILE/2,y:sp.ty*TILE+TILE/2};}
-  else lightsSwitch=null;
+  // Lights switch exists every level now, at a random hidden location
+  const sp=randomSwitchTile();lightsSwitch={x:sp.tx*TILE+TILE/2,y:sp.ty*TILE+TILE/2};
   buyStationPos={x:27*TILE+TILE/2,y:27*TILE+TILE/2};
   workshopPos={x:7*TILE+TILE/2,y:11*TILE+TILE/2}; // tx=7,ty=11 — clear in all maps
   perkMachines=PERKS_DEF.map((pd,i)=>({...pd,x:PERK_POS[i].tx*TILE+TILE/2,y:PERK_POS[i].ty*TILE+TILE/2,bought:!!perks[pd.id]}));
@@ -478,7 +490,8 @@ function initPlayer(){
     flashLen:290,flashAngle:Math.PI/3.8,grenades:{frag:0,molotov:0,flashbang:0},
     selectedGrenade:'frag',armourHp:0,maxArmourHp:0,lastStand:false,lastStandTimer:0,
     deployables:{mine:0,claymore:0,sentry:0},selectedDeployable:'mine',
-    killstreaks:{airstrike:0,mortar:0,nuke:0},selectedKillstreak:'nuke'};
+    killstreaks:{airstrike:0,mortar:0,nuke:0},selectedKillstreak:'nuke',
+    battery:40,batteryMax:40};
 }
 const WEAPONS={
   knife:     {dmg:300,cd:0.42,melee:true,range:54,arc:0.85,color:'#d6d6e0'},
@@ -871,6 +884,14 @@ function updateEnemies(dt){
 // ── Player update ──────────────────────────────────────────────────────────
 function updatePlayer(dt){
   if(player.lastStand){player.lastStandTimer-=dt;if(player.lastStandTimer<=0){gameOver();return;}player.weapon='pistol';}
+  // Flashlight battery: drains while the map lights are off; dead battery = near-total darkness
+  if(lightsOn){player.flashLen=9999;player.flashAngle=Math.PI;}
+  else{
+    const was=player.battery;
+    player.battery=Math.max(0,player.battery-dt);
+    if(was>0&&player.battery<=0)addNotif('🔦 Flashlight dead — find the light switch!','#ff5533',4);
+    player.flashAngle=Math.PI/3.8;player.flashLen=player.battery>0?290:46;
+  }
   const uiOpen=inventoryOpen||buyStationOpen||bigMapOpen||workshopOpen;
   let dx=0,dy=0;
   if(!uiOpen){
@@ -1074,6 +1095,18 @@ function drawHUD(){
     ctx.strokeStyle='#224';ctx.strokeRect(18,H-38,206,12);
     ctx.fillStyle='#aac';ctx.font='8px Courier New';ctx.textAlign='center';ctx.fillText(`ARM ${Math.ceil(player.armourHp)}/${player.maxArmourHp}`,121,H-29);
   }
+  // Flashlight battery (above health bar; only matters while lights are off)
+  if(!lightsOn){
+    const bx=14,by=H-84,bw=214;
+    ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(bx,by,bw,20);
+    const bat=clamp(player.battery/player.batteryMax,0,1);
+    ctx.fillStyle='#1a1400';ctx.fillRect(bx+40,by+5,160,10);
+    ctx.fillStyle=bat>0.3?'#ffdd33':bat>0?'#ff7700':'#661a00';ctx.fillRect(bx+40,by+5,160*bat,10);
+    ctx.strokeStyle='#444';ctx.lineWidth=1;ctx.strokeRect(bx+40,by+5,160,10);
+    ctx.fillStyle=bat>0?'#ffdd33':'#ff5533';ctx.font='13px Courier New';ctx.textAlign='left';ctx.fillText('🔦',bx+6,by+15);
+    ctx.fillStyle=bat>0?'#000':'#fff';ctx.font='bold 8px Courier New';ctx.textAlign='center';
+    ctx.fillText(bat>0?`${Math.ceil(player.battery)}s`:'DEAD',bx+120,by+13);
+  }
   // Weapon bar (dynamic slot count)
   const wn=ALL_WEAPONS.length,wsW=42,wsGap=2,wbW=wn*(wsW+wsGap)+12,wbX=W-14-wbW;
   ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(wbX,H-60,wbW,46);
@@ -1129,12 +1162,12 @@ function drawHUD(){
   ctx.fillStyle='#ffdd00';ctx.font='bold 16px Courier New';ctx.textAlign='center';ctx.fillText(`SCORE: ${score}`,W/2,28);
   ctx.fillStyle='#44ff88';ctx.font='bold 13px Courier New';ctx.fillText(`£${currency}`,W/2,44);
   // Level panel
-  const hasObj=globalLevel>=2&&!lightsOn;
-  ctx.fillStyle='rgba(0,0,0,0.65)';ctx.fillRect(10,10,205,hasObj?82:64);
+  const hasObj=!lightsOn;
+  ctx.fillStyle='rgba(0,0,0,0.65)';ctx.fillRect(10,10,205,hasObj?72:64);
   ctx.fillStyle=mapCfg.accentColor;ctx.font='bold 12px Courier New';ctx.textAlign='left';ctx.fillText(mapCfg.name.toUpperCase(),16,26);
   ctx.fillStyle='#aaa';ctx.font='11px Courier New';ctx.fillText(`LEVEL ${globalLevel} / 20`,16,40);
   ctx.fillStyle='#888';ctx.font='10px Courier New';ctx.fillText(`ENEMIES: ${enemies.length}`,16,54);
-  if(hasObj){const pulse=Math.sin(performance.now()/500)*0.4+0.6;ctx.fillStyle=`rgba(255,220,0,${pulse})`;ctx.font='bold 10px Courier New';ctx.fillText('○ Activate lights switch',16,68);ctx.fillStyle='#888';ctx.font='9px Courier New';ctx.fillText('[M] map  •  follow ⚡ arrow',16,80);}
+  if(hasObj){const pulse=Math.sin(performance.now()/500)*0.4+0.6;ctx.fillStyle=`rgba(255,220,0,${pulse})`;ctx.font='bold 10px Courier New';ctx.fillText('○ Lights off — find the switch',16,68);}
   if(lightsOn){ctx.fillStyle='#2ecc71';ctx.font='10px Courier New';ctx.fillText('✓ Lights on',16,68);}
   if(isBossLevel()){ctx.fillStyle='#ff4400';ctx.font='bold 9px Courier New';ctx.fillText('⚠ BOSS LEVEL',130,26);}
   drawMinimap();
@@ -1201,11 +1234,7 @@ function drawMinimap(){
   if(buyStationPos)icon(buyStationPos.x,buyStationPos.y,'🧺',14);
   // Workshop
   if(workshopPos)icon(workshopPos.x,workshopPos.y,'🔧',14);
-  // Lights switch (pulsing)
-  if(lightsSwitch&&!lightsOn){
-    const p=Math.sin(performance.now()/300)*0.4+0.6;
-    ctx.globalAlpha=p;icon(lightsSwitch.x,lightsSwitch.y,'⚡',14);ctx.globalAlpha=1;
-  }
+  // (lights switch is hidden — no marker)
   // Player — glowing blue dot + direction arrow
   const px=mX+player.x*scX,py=mY+player.y*scY;
   ctx.strokeStyle='#88ccff';ctx.lineWidth=1.5;
@@ -1235,7 +1264,6 @@ function drawBigMap(){
     if(emoji){ctx.font='12px sans-serif';ctx.textAlign='center';ctx.fillText(emoji,sx,sy+4);}
     ctx.fillStyle=col;ctx.font='bold 8px Courier New';ctx.textAlign='center';ctx.fillText(label,sx,sy+18);
   }
-  if(lightsSwitch&&!lightsOn)mark(lightsSwitch.x,lightsSwitch.y,'#ffdd00','LIGHTS','⚡');
   if(buyStationPos)mark(buyStationPos.x,buyStationPos.y,'#2ecc71','SHOP','🧺');
   if(workshopPos)mark(workshopPos.x,workshopPos.y,'#ff8800','WORKSHOP','🔧');
   perkMachines.forEach(pm=>{if(!pm.bought)mark(pm.x,pm.y,pm.color,pm.name,pm.symbol);});
@@ -1460,21 +1488,21 @@ function advanceLevel(){
   const mapIdx=Math.floor((globalLevel-1)/5);
   const newMap=campaignMode&&(globalLevel-1)%5===0;
   if(newMap){
-    lightsOn=false;player.flashLen=290;player.flashAngle=Math.PI/3.8;
     generateMap(MAPS[Math.min(mapIdx,3)]);
     // Move player to a safe spawn on the new map
     const sp=findSafeSpawn();
     player.x=sp.x;player.y=sp.y;
     addNotif(`NEW AREA: ${MAPS[Math.min(mapIdx,3)].name}`,MAPS[Math.min(mapIdx,3)].accentColor,4);
-    addNotif('Lights off in new area — find the ⚡ switch!','#ffdd00',5);
   } else {
     setupMapObjects();
   }
+  // Each round starts in the dark with a fresh flashlight battery
+  lightsOn=false;player.flashLen=290;player.flashAngle=Math.PI/3.8;player.battery=player.batteryMax;
   player.lastStand=false;player.invincible=0;
   player.hp=Math.min(player.hp+20,player.maxHp);
   bullets=[];grenadeObjects=[];firePatches=[];particles=[];
   levelStartTimer=3.0;
-  if(globalLevel>=2&&!lightsOn)addNotif('⚡ Lights switch available — check [M] map','#ffdd00',4);
+  if(!lightsOn)addNotif('Lights are OFF — flashlight running down. Find the switch!','#ffdd00',4);
   if(isBossLevel())addNotif('⚠ WARNING: Boss level! Use workshop to upgrade first','#ff3300',4);
   else addNotif(`Level ${globalLevel}/20 — defeat all enemies`,'#e63946',3);
 }
@@ -1689,7 +1717,6 @@ function loop(now){
     drawGrenades(camX,camY);drawBullets(camX,camY);
     enemies.forEach(e=>drawEnemy(e,camX,camY));
     drawPlayer(camX,camY);drawFlashlight(camX,camY);
-    drawObjectiveArrow(camX,camY);
     drawScreenFlash();
     drawHUD();drawInventory();drawBuyStation();drawWorkshop();drawBigMap();
     if(state===STATE.PAUSED)drawPaused();
