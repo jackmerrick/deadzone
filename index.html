@@ -229,6 +229,7 @@ document.addEventListener('keydown',e=>{
     if(e.key==='c'||e.key==='C')cycleDeployable();
     if(e.key==='e'||e.key==='E')triggerKillstreak();
     if(e.key==='v'||e.key==='V')cycleKillstreak();
+    if(e.key==='b'||e.key==='B')toggleBuildMode();
     if(e.key==='q'||e.key==='Q'){if(buyStationOpen){const i=SHOP_TABS.indexOf(activeTab);activeTab=SHOP_TABS[(i+1)%SHOP_TABS.length];}else cycleGrenade();}
     if(buyStationOpen){
       if(e.key==='ArrowLeft'){const i=SHOP_TABS.indexOf(activeTab);activeTab=SHOP_TABS[(i-1+SHOP_TABS.length)%SHOP_TABS.length];}
@@ -712,6 +713,44 @@ function drawAirBombs(camX,camY){
   });
 }
 
+// ── Buildable shelter ────────────────────────────────────────────────────────
+let buildMode=false,builtWalls=[];
+const WALL_COST=150,WALL_HP=400;
+function toggleBuildMode(){
+  if(player.lastStand)return;
+  buildMode=!buildMode;
+  if(buildMode){inventoryOpen=buyStationOpen=bigMapOpen=workshopOpen=false;addNotif(`BUILD MODE — click to place a wall (£${WALL_COST}).  [B] exit`,'#88ccff',3);}
+}
+function placeWall(mx,my){
+  const camX=Math.round(player.x-W/2),camY=Math.round(player.y-H/2),tx=Math.floor((mx+camX)/TILE),ty=Math.floor((my+camY)/TILE);
+  if(tx<1||tx>=MAP_W-1||ty<1||ty>=MAP_H-1){addNotif('Out of bounds','#ff8800',1.2);return;}
+  if(worldMap[ty][tx]!==0){addNotif('Already blocked there','#ff8800',1.2);return;}
+  if(Math.floor(player.x/TILE)===tx&&Math.floor(player.y/TILE)===ty){addNotif('Move off the tile first','#ff8800',1.2);return;}
+  if(currency<WALL_COST){addNotif(`Need £${WALL_COST-currency} more`,'#ff8800',1.5);return;}
+  currency-=WALL_COST;worldMap[ty][tx]=1;
+  builtWalls.push({tx,ty,x:tx*TILE+TILE/2,y:ty*TILE+TILE/2,hp:WALL_HP,maxHp:WALL_HP});
+}
+function clearBuiltWalls(){builtWalls.forEach(w=>{if(worldMap[w.ty])worldMap[w.ty][w.tx]=0;});builtWalls=[];}
+function updateBuiltWalls(dt){
+  enemies.forEach(e=>{if(!e.alive)return;builtWalls.forEach(w=>{if(Math.hypot(e.x-w.x,e.y-w.y)<TILE*0.55+e.r&&e.atkCd<=0){w.hp-=e.dmg;e.atkCd=e.atkRate;spawnBlood(w.x,w.y,3,'#9aa');}});});
+  builtWalls=builtWalls.filter(w=>{if(w.hp<=0){if(worldMap[w.ty])worldMap[w.ty][w.tx]=0;spawnExplosion(w.x,w.y,10);addShake(4,0.12);return false;}return true;});
+}
+function drawBuiltWalls(camX,camY){
+  builtWalls.forEach(w=>{const sx=w.x-camX-TILE/2,sy=w.y-camY-TILE/2,ratio=w.hp/w.maxHp;
+    ctx.fillStyle='#4a5560';ctx.fillRect(sx+3,sy+3,TILE-6,TILE-6);
+    ctx.fillStyle='#5f6e7a';ctx.fillRect(sx+3,sy+3,TILE-6,4);
+    ctx.strokeStyle='#2a323a';ctx.lineWidth=2;ctx.strokeRect(sx+3,sy+3,TILE-6,TILE-6);
+    if(ratio<1){ctx.fillStyle='#300';ctx.fillRect(sx+8,sy+6,TILE-16,5);ctx.fillStyle=ratio>0.4?'#8fce4f':'#cc4422';ctx.fillRect(sx+8,sy+6,(TILE-16)*ratio,5);}
+  });
+  if(buildMode){
+    const tx=Math.floor((mouse.x+camX)/TILE),ty=Math.floor((mouse.y+camY)/TILE);
+    const ok=tx>=1&&tx<MAP_W-1&&ty>=1&&ty<MAP_H-1&&worldMap[ty]&&worldMap[ty][tx]===0&&currency>=WALL_COST&&!(Math.floor(player.x/TILE)===tx&&Math.floor(player.y/TILE)===ty);
+    const gx=tx*TILE-camX,gy=ty*TILE-camY;
+    ctx.globalAlpha=0.5;ctx.fillStyle=ok?'#4a8fce':'#aa3333';ctx.fillRect(gx+3,gy+3,TILE-6,TILE-6);ctx.globalAlpha=1;
+    ctx.strokeStyle=ok?'#88ccff':'#ff5555';ctx.lineWidth=2;ctx.strokeRect(gx+3,gy+3,TILE-6,TILE-6);
+  }
+}
+
 // ── Interact ───────────────────────────────────────────────────────────────
 function handleInteract(){
   if(player.lastStand)return;
@@ -907,7 +946,7 @@ function updatePlayer(dt){
   if(!isWall(player.x+r,ny)&&!isWall(player.x-r,ny)&&!isWall(player.x,ny+r)&&!isWall(player.x,ny-r))player.y=ny;
   const camX=player.x-W/2,camY=player.y-H/2;
   player.angle=Math.atan2(mouse.y+camY-player.y,mouse.x+camX-player.x);
-  if((mouse.down||keys[' '])&&!uiOpen&&!airstrikePending)shoot();
+  if((mouse.down||keys[' '])&&!uiOpen&&!airstrikePending&&!buildMode)shoot();
   if(player.invincible>0)player.invincible-=dt;
   if(!player.lastStand&&!uiOpen){
     for(let wi=0;wi<ALL_WEAPONS.length;wi++){if(keys[String(wi+1)]&&player.weapons.includes(ALL_WEAPONS[wi]))player.weapon=ALL_WEAPONS[wi];}
@@ -1194,7 +1233,13 @@ function drawHUD(){
   }
   if(performance.now()/1000-gameStartTime<16){
     ctx.fillStyle='rgba(255,255,255,0.22)';ctx.font='9px Courier New';ctx.textAlign='center';
-    ctx.fillText('WASD:Move  Click:Shoot  Enter:Interact  G:Grenade  Q:Cycle  Tab:Inventory  M:Map  ESC:Pause',W/2,H-6);
+    ctx.fillText('WASD:Move Click:Shoot Y:Weapon G:Grenade F:Deploy E:Killstreak B:Build Enter:Interact Tab:Inv M:Map ESC:Pause',W/2,H-6);
+  }
+  if(buildMode){
+    ctx.fillStyle='rgba(20,40,70,0.85)';ctx.fillRect(W/2-170,64,340,26);
+    ctx.strokeStyle='#88ccff';ctx.lineWidth=1;ctx.strokeRect(W/2-170,64,340,26);
+    ctx.fillStyle=currency>=WALL_COST?'#88ccff':'#ff6666';ctx.font='bold 12px Courier New';ctx.textAlign='center';
+    ctx.fillText(`🔨 BUILD MODE — click: wall £${WALL_COST}  ·  [B] exit`,W/2,81);
   }
   if(airstrikePending){
     const mx=mouse.x,my=mouse.y,p=performance.now()/300;
@@ -1446,7 +1491,7 @@ function startGame(mapIdx){
   globalLevel=1;score=0;currency=0;
   sessionCoins=0;sessionKills=0;
   waveActive=false;levelComplete=false;levelStartTimer=2.5;levelTimer=0;
-  bullets=[];particles=[];pickups=[];enemies=[];grenadeObjects=[];firePatches=[];notifs=[];deployables=[];airBombs=[];airstrikePending=false;flashUntil=0;
+  bullets=[];particles=[];pickups=[];enemies=[];grenadeObjects=[];firePatches=[];notifs=[];deployables=[];airBombs=[];airstrikePending=false;flashUntil=0;builtWalls=[];buildMode=false;
   lightsOn=false;buyStationOpen=false;inventoryOpen=false;bigMapOpen=false;workshopOpen=false;
   inventoryAnim=0;inventorySelected=0;workshopSelectedWeapon='pistol';
   resetUpgrades();
@@ -1483,6 +1528,7 @@ function advanceLevel(){
     else if(p.type==='machinegun'&&!player.weapons.includes('machinegun')){player.weapons.push('machinegun');player.ammo.machinegun=(player.ammo.machinegun||0)+getAmmoBonus('machinegun',120);addNotif('🔫 Machine gun collected!','#ffcc44',3);}
   });
   pickups=[];
+  clearBuiltWalls();buildMode=false;
   globalLevel++;
   if(globalLevel>20){state=STATE.WIN;if(score>highScore){highScore=score;localStorage.setItem('dz_hs',highScore);}commitRun(false);return;}
   const mapIdx=Math.floor((globalLevel-1)/5);
@@ -1685,6 +1731,7 @@ function handleClick(e){
   if(workshopOpen){handleWorkshopClick(mx,my);return;}
   if(buyStationOpen){handleBuyClick(mx,my);return;}
   if(bigMapOpen){bigMapOpen=false;return;}
+  if(state===STATE.PLAYING&&buildMode){placeWall(mx,my);return;}
   if(state===STATE.PLAYING&&airstrikePending){const camX=player.x-W/2,camY=player.y-H/2;callAirstrike(mx+camX,my+camY);airstrikePending=false;return;}
   if(state===STATE.MENU){for(const reg of menuRegions){if(mx>reg.x&&mx<reg.x+reg.w&&my>reg.y&&my<reg.y+reg.h){reg.action();break;}}}
   else if(state===STATE.PAUSED){const b=PAUSE_QUIT;if(mx>b.x&&mx<b.x+b.w&&my>b.y&&my<b.y+b.h){commitRun(false);state=STATE.MENU;menuTab='main';}}
@@ -1702,7 +1749,7 @@ function loop(now){
   else if(state===STATE.PLAYING||state===STATE.PAUSED){
     if(state===STATE.PLAYING){
       updatePlayer(dt);updateBullets(dt);updateParticles(dt);updatePickups(dt);
-      updateGrenades(dt);updateDeployables(dt);updateAirBombs(dt);updateBarricades(dt);updateInventoryAnim(dt);updateNotifs(dt);
+      updateGrenades(dt);updateDeployables(dt);updateAirBombs(dt);updateBarricades(dt);updateBuiltWalls(dt);updateInventoryAnim(dt);updateNotifs(dt);
       if(waveActive){
         updateEnemies(dt);
         if(enemies.length===0){waveActive=false;levelComplete=true;levelTimer=isBossLevel()?12.0:10.0;spawnPickup('health',player.x+rand(-120,120),player.y+rand(-120,120));if(isBossLevel())addNotif('Grab the boss loot before the next level!','#ffcc44',5);}
@@ -1713,7 +1760,7 @@ function loop(now){
     const camX=Math.round(player.x-W/2),camY=Math.round(player.y-H/2);
     ctx.fillStyle=mapCfg.bg;ctx.fillRect(0,0,W,H);
     drawWorld(camX,camY);drawDebris(camX,camY);drawMapObjects(camX,camY);
-    drawDeployables(camX,camY);drawAirBombs(camX,camY);drawPickups(camX,camY);drawParticles(camX,camY);
+    drawBuiltWalls(camX,camY);drawDeployables(camX,camY);drawAirBombs(camX,camY);drawPickups(camX,camY);drawParticles(camX,camY);
     drawGrenades(camX,camY);drawBullets(camX,camY);
     enemies.forEach(e=>drawEnemy(e,camX,camY));
     drawPlayer(camX,camY);drawFlashlight(camX,camY);
