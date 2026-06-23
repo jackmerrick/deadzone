@@ -27,10 +27,14 @@ const MAPS=[
   {id:'bunker',    name:'Underground Bunker', bg:'#070d12', floorA:'#0d1a26',floorB:'#101e2c', wallA:'#1e3040',wallB:'#243850',accentColor:'#00b4d8',fog:'rgba(0,5,15,0.9)'},
   {id:'wasteland', name:'Wasteland',          bg:'#100a04', floorA:'#2a1e12',floorB:'#321f10', wallA:'#6b4a30',wallB:'#7a5535',accentColor:'#f77f00',fog:'rgba(10,5,0,0.88)'},
   {id:'graveyard', name:'Graveyard',          bg:'#060806', floorA:'#121610',floorB:'#141a12', wallA:'#2a3020',wallB:'#323828',accentColor:'#7bc67e',fog:'rgba(0,5,0,0.9)'},
+  {id:'arctic',    name:'Frozen Outpost',     bg:'#070d12', floorA:'#16242e',floorB:'#1a2a35', wallA:'#3d5d70',wallB:'#496c80',accentColor:'#7fd4ff',fog:'rgba(8,18,28,0.85)'},
 ];
+// Campaign chains MAPS[0..3]; the arctic map (index 4) is single-map only.
 
 let state=STATE.MENU;
 let globalLevel=1;
+let campaignMode=true;   // true = chain MAPS[0..3]; false = stay on one map for 20 levels
+let fixedMapIdx=0;       // map used in single-map mode
 let score=0,currency=0;
 let highScore=parseInt(localStorage.getItem('dz_hs')||'0');
 
@@ -261,6 +265,7 @@ function generateMap(cfg){
     city:[[4,4,6,2],[12,2,5,3],[20,5,5,2],[2,10,3,7],[9,14,2,4],[16,10,7,3],[24,12,4,5],[5,20,8,3],[18,20,5,4],[26,22,3,5],[11,26,8,2]],
     bunker:[[2,5,9,2],[15,5,9,2],[25,5,4,9],[2,12,4,9],[11,12,7,2],[21,15,4,7],[5,23,11,2],[19,23,9,2],[2,27,7,2]],
     wasteland:[[3,3,2,2],[9,6,3,2],[17,4,2,3],[23,3,4,2],[5,13,2,4],[13,12,3,3],[21,10,2,5],[27,14,2,3],[3,21,3,3],[11,23,5,2],[19,21,3,4],[26,21,3,3]],
+    arctic:[[5,5,3,3],[12,3,6,2],[21,6,4,3],[3,12,2,6],[10,11,5,5],[19,13,3,6],[26,13,3,5],[5,22,5,3],[14,21,4,5],[22,23,5,3]],
     graveyard:null
   };
   if(cfg.id==='graveyard'){for(let gy=2;gy<MAP_H-2;gy+=4)for(let gx=2;gx<MAP_W-2;gx+=4)if(Math.random()>0.3){worldMap[gy][gx]=1;if(Math.random()>0.5)worldMap[gy][gx+1]=1;}}
@@ -277,6 +282,7 @@ const DEBRIS_PAL={
   bunker:   ['#16242e','#1e3340','#0c161e','#2a3f50'],
   wasteland:['#3a2a18','#4a3420','#241608','#5a4028'],
   graveyard:['#1a1f16','#252b1c','#10140d','#2f3722'],
+  arctic:   ['#243843','#2e4756','#16242e','#3a5a6e'],
 };
 function generateDebris(){
   debris=[];
@@ -330,9 +336,9 @@ const PERKS_DEF=[
   {id:'doubleTap',  name:'Double Tap',  cost:2000,color:'#ff3300',symbol:'🔫',desc:'2x Fire Rate'},
   {id:'quickRevive',name:'Quick Revive',cost:500, color:'#00aaff',symbol:'❤️',desc:'Revive from Last Stand once'},
 ];
-const SWITCH_POS={city:{tx:15,ty:8},bunker:{tx:12,ty:15},wasteland:{tx:14,ty:14},graveyard:{tx:16,ty:16}};
+const SWITCH_POS={city:{tx:15,ty:8},bunker:{tx:12,ty:15},wasteland:{tx:14,ty:14},graveyard:{tx:16,ty:16},arctic:{tx:14,ty:9}};
 const PERK_POS=[{tx:4,ty:4},{tx:26,ty:4},{tx:4,ty:26},{tx:26,ty:26}];
-const BARRICADE_POS={city:[{tx:8,ty:2,h:true},{tx:2,ty:8,h:false}],bunker:[{tx:11,ty:7,h:true},{tx:21,ty:14,h:false}],wasteland:[{tx:7,ty:7,h:true},{tx:22,ty:18,h:false}],graveyard:[{tx:6,ty:6,h:true},{tx:20,ty:20,h:false}]};
+const BARRICADE_POS={city:[{tx:8,ty:2,h:true},{tx:2,ty:8,h:false}],bunker:[{tx:11,ty:7,h:true},{tx:21,ty:14,h:false}],wasteland:[{tx:7,ty:7,h:true},{tx:22,ty:18,h:false}],graveyard:[{tx:6,ty:6,h:true},{tx:20,ty:20,h:false}],arctic:[{tx:9,ty:4,h:true},{tx:23,ty:19,h:false}]};
 
 function setupMapObjects(){
   if(globalLevel>=2){const sp=SWITCH_POS[mapCfg.id]||{tx:15,ty:15};lightsSwitch={x:sp.tx*TILE+TILE/2,y:sp.ty*TILE+TILE/2};}
@@ -1147,7 +1153,9 @@ function drawInventory(){
 }
 
 // ── Game flow ───────────────────────────────────────────────────────────────
-function startGame(){
+function startGame(mapIdx){
+  campaignMode=(mapIdx===undefined||mapIdx===null);
+  fixedMapIdx=campaignMode?0:Math.max(0,Math.min(mapIdx,MAPS.length-1));
   globalLevel=1;score=0;currency=0;
   sessionCoins=0;sessionKills=0;
   waveActive=false;levelComplete=false;levelStartTimer=2.5;levelTimer=0;
@@ -1155,14 +1163,14 @@ function startGame(){
   lightsOn=false;buyStationOpen=false;inventoryOpen=false;bigMapOpen=false;workshopOpen=false;
   inventoryAnim=0;inventorySelected=0;workshopSelectedWeapon='pistol';
   resetUpgrades();
-  generateMap(MAPS[0]);
+  generateMap(MAPS[fixedMapIdx]);
   initPlayer();
   gameStartTime=performance.now()/1000;
   state=STATE.PLAYING;
-  addNotif('DEAD ZONE — Level 1/20','#e63946',3);
+  addNotif(`DEAD ZONE — Level 1/20${campaignMode?'':' · '+MAPS[fixedMapIdx].name}`,'#e63946',3);
   addNotif('Buy weapons from 🧺 shop  ·  Upgrade at 🔧 workshop','#2ecc71',5);
 }
-function restartGame(){startGame();}
+function restartGame(){startGame(campaignMode?null:fixedMapIdx);}
 
 // Fold the current run's earnings/stats into the persistent save
 function commitRun(died){
@@ -1191,7 +1199,7 @@ function advanceLevel(){
   globalLevel++;
   if(globalLevel>20){state=STATE.WIN;if(score>highScore){highScore=score;localStorage.setItem('dz_hs',highScore);}commitRun(false);return;}
   const mapIdx=Math.floor((globalLevel-1)/5);
-  const newMap=(globalLevel-1)%5===0;
+  const newMap=campaignMode&&(globalLevel-1)%5===0;
   if(newMap){
     lightsOn=false;player.flashLen=290;player.flashAngle=Math.PI/3.8;
     generateMap(MAPS[Math.min(mapIdx,3)]);
@@ -1250,18 +1258,41 @@ function drawMenu(){
 
 function drawMainMenu(){
   const r=rankFor(saveData.kills);
-  ctx.fillStyle='#666';ctx.font='14px Courier New';ctx.textAlign='center';ctx.fillText('TOP-DOWN ZOMBIE SURVIVAL',W/2,190);
-  ctx.fillStyle=r.color;ctx.font='bold 13px Courier New';ctx.fillText(`RANK: ${r.name.toUpperCase()}  ·  ${saveData.kills} TOTAL KILLS`,W/2,214);
-  ctx.fillStyle='#ffdd00';ctx.font='13px Courier New';ctx.fillText(`BEST SCORE: ${Math.max(highScore,saveData.bestScore)}  ·  HIGHEST LEVEL: ${saveData.highestLevel}/20`,W/2,236);
-  ['20 LEVELS  ·  4 MAPS  ·  RUINS','BUY WEAPONS 🧺  ·  UPGRADE 🔧  ·  PERKS','GRENADES · ARMOUR · LAST STAND · MACHINE GUN','BOSS EVERY 5 LEVELS  ·  CASH DROPS'].forEach((f,i)=>{ctx.fillStyle=`rgba(140,140,140,${0.5+Math.sin(menuAnim+i)*0.2})`;ctx.font='11px Courier New';ctx.fillText(f,W/2,264+i*16);});
-  const bw=240,bh=56,bx=W/2-bw/2,by=350,hov=mHov(bx,by,bw,bh);
+  ctx.fillStyle='#666';ctx.font='14px Courier New';ctx.textAlign='center';ctx.fillText('TOP-DOWN ZOMBIE SURVIVAL',W/2,182);
+  ctx.fillStyle=r.color;ctx.font='bold 13px Courier New';ctx.fillText(`RANK: ${r.name.toUpperCase()}  ·  ${saveData.kills} TOTAL KILLS`,W/2,204);
+  ctx.fillStyle='#ffdd00';ctx.font='13px Courier New';ctx.fillText(`BEST SCORE: ${Math.max(highScore,saveData.bestScore)}  ·  HIGHEST LEVEL: ${saveData.highestLevel}/20`,W/2,224);
+  ['20 LEVELS  ·  5 MAPS  ·  RUINS','BUY 🧺  ·  UPGRADE 🔧  ·  PERKS  ·  BOSS EVERY 5'].forEach((f,i)=>{ctx.fillStyle=`rgba(140,140,140,${0.5+Math.sin(menuAnim+i)*0.2})`;ctx.font='11px Courier New';ctx.fillText(f,W/2,248+i*16);});
+  // START CAMPAIGN
+  const bw=260,bh=50,bx=W/2-bw/2,by=288,hov=mHov(bx,by,bw,bh);
   ctx.fillStyle=hov?'#e63946':'#7a1010';ctx.fillRect(bx,by,bw,bh);
   ctx.strokeStyle='#e63946';ctx.lineWidth=2;ctx.strokeRect(bx,by,bw,bh);
-  ctx.fillStyle='#fff';ctx.font='bold 22px Courier New';ctx.textAlign='center';ctx.fillText('START CAMPAIGN',W/2,by+36);
+  ctx.fillStyle='#fff';ctx.font='bold 21px Courier New';ctx.textAlign='center';ctx.fillText('START CAMPAIGN',W/2,by+33);
+  ctx.fillStyle='#c98';ctx.font='10px Courier New';ctx.fillText('City → Bunker → Wasteland → Graveyard',W/2,by+47);
   mReg(bx,by,bw,bh,()=>startGame());
+  // Map picker
+  ctx.fillStyle='#888';ctx.font='bold 13px Courier New';ctx.fillText('— OR PLAY A SINGLE MAP (20 levels) —',W/2,by+86);
+  const n=MAPS.length,mw=148,mh=104,g=12,totalW=n*mw+(n-1)*g,sx=Math.max(10,W/2-totalW/2),ty=by+102;
+  MAPS.forEach((m,i)=>{
+    const x=sx+i*(mw+g),mhov=mHov(x,ty,mw,mh);
+    // floor swatch
+    ctx.fillStyle=m.floorA;ctx.fillRect(x,ty,mw,mh);
+    for(let cy=0;cy<mh;cy+=16)for(let cx=0;cx<mw;cx+=16){if((Math.floor(cx/16)+Math.floor(cy/16))%2){ctx.fillStyle=m.floorB;ctx.fillRect(x+cx,ty+cy,16,16);}}
+    // wall blocks hint
+    ctx.fillStyle=m.wallA;ctx.fillRect(x+12,ty+30,28,20);ctx.fillRect(x+mw-46,ty+52,30,22);ctx.fillRect(x+mw/2-8,ty+18,22,16);
+    // header band
+    ctx.fillStyle='rgba(0,0,0,0.55)';ctx.fillRect(x,ty,mw,24);
+    ctx.fillStyle=m.accentColor;ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText(m.name,x+mw/2,ty+16);
+    // footer band
+    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(x,ty+mh-22,mw,22);
+    ctx.fillStyle='#bbb';ctx.font='10px Courier New';ctx.fillText(mhov?'▶ PLAY':'20 levels',x+mw/2,ty+mh-8);
+    ctx.strokeStyle=mhov?m.accentColor:'#333';ctx.lineWidth=mhov?2:1;ctx.strokeRect(x,ty,mw,mh);
+    if(m.id==='arctic'){ctx.fillStyle='#7fd4ff';ctx.font='bold 10px Courier New';ctx.textAlign='right';ctx.fillText('★ NEW',x+mw-6,ty+38);}
+    mReg(x,ty,mw,mh,()=>startGame(i));
+  });
   // Live preview of your equipped character
-  drawCharacterPreview(W/2,470,26,getOutfit(),getHat());
-  ctx.fillStyle='#555';ctx.font='10px Courier New';ctx.fillText('Customise in the LOCKER tab',W/2,510);
+  const py=ty+mh+44;
+  drawCharacterPreview(W/2,py,24,getOutfit(),getHat());
+  ctx.fillStyle='#555';ctx.font='10px Courier New';ctx.textAlign='center';ctx.fillText('Customise in the LOCKER tab',W/2,py+38);
 }
 
 function drawStats(){
