@@ -129,7 +129,7 @@ let inventoryAnim=0,inventorySelected=0;
 let workshopSelectedWeapon='pistol';
 let weaponUpgrades={};
 let activeTab='weapons';
-const SHOP_TABS=['weapons','grenades','armour','ammo'];
+const SHOP_TABS=['weapons','grenades','deployables','armour','ammo'];
 
 // Upgrade definitions
 const UPGRADE_DEFS=[
@@ -224,6 +224,8 @@ document.addEventListener('keydown',e=>{
 
   if(state===STATE.PLAYING){
     if(e.key==='g'||e.key==='G')throwGrenade();
+    if(e.key==='f'||e.key==='F')placeDeployable();
+    if(e.key==='c'||e.key==='C')cycleDeployable();
     if(e.key==='q'||e.key==='Q'){if(buyStationOpen){const i=SHOP_TABS.indexOf(activeTab);activeTab=SHOP_TABS[(i+1)%SHOP_TABS.length];}else cycleGrenade();}
     if(buyStationOpen){
       if(e.key==='ArrowLeft'){const i=SHOP_TABS.indexOf(activeTab);activeTab=SHOP_TABS[(i-1+SHOP_TABS.length)%SHOP_TABS.length];}
@@ -375,6 +377,10 @@ const SHOP_ITEMS_BY_TAB={
     {id:'molotov',   name:'Molotov x2', cost:350, type:'grenade',desc:'Fire patch on ground — G to throw'},
     {id:'flashbang', name:'Flashbang x2',cost:250,type:'grenade',desc:'Stuns all nearby enemies — G to throw'},
   ],
+  deployables:[
+    {id:'mine',     name:'Proximity Mine x2',cost:350,type:'deployable',desc:'Place [F], cycle [C] — detonates when zombies step near'},
+    {id:'claymore', name:'Claymore x2',      cost:400,type:'deployable',desc:'Place [F], cycle [C] — directional blast facing your aim'},
+  ],
   armour:[
     {id:'lightArmour',name:'Light Armour',cost:400,type:'armour',desc:'+50 armour HP, absorbs 70% of damage'},
     {id:'heavyArmour',name:'Heavy Armour',cost:800,type:'armour',desc:'+100 armour HP, absorbs 70% of damage'},
@@ -402,6 +408,10 @@ function buyItem(item){
     player.grenades[item.id]=(player.grenades[item.id]||0)+2;
     player.selectedGrenade=item.id;
     addNotif(`+2 ${item.name} — G to throw, Q to cycle`,'#ffdd00',3);
+  } else if(item.type==='deployable'){
+    player.deployables[item.id]=(player.deployables[item.id]||0)+(item.qty||2);
+    player.selectedDeployable=item.id;
+    addNotif(`+${item.qty||2} ${item.name} — [F] place, [C] cycle`,'#ffaa00',3);
   } else if(item.type==='armour'){
     const add=item.id==='lightArmour'?50:100;
     player.armourHp=Math.min(player.armourHp+add,200);
@@ -448,7 +458,8 @@ function initPlayer(){
   player={x:sp.x,y:sp.y,speed:185,hp:100,maxHp:100,angle:0,radius:15,weapon:'pistol',
     ammo:{pistol:Infinity,shotgun:0,rifle:0,sniper:0,machinegun:0},weapons:['knife','pistol'],invincible:0,
     flashLen:290,flashAngle:Math.PI/3.8,grenades:{frag:0,molotov:0,flashbang:0},
-    selectedGrenade:'frag',armourHp:0,maxArmourHp:0,lastStand:false,lastStandTimer:0};
+    selectedGrenade:'frag',armourHp:0,maxArmourHp:0,lastStand:false,lastStandTimer:0,
+    deployables:{mine:0,claymore:0,sentry:0},selectedDeployable:'mine'};
 }
 const WEAPONS={
   knife:     {dmg:300,cd:0.42,melee:true,range:54,arc:0.85,color:'#d6d6e0'},
@@ -524,6 +535,64 @@ function explodeGrenade(g){
 function drawGrenades(camX,camY){
   grenadeObjects.forEach(g=>{const sx=g.x-camX,sy=g.y-camY;ctx.fillStyle=g.type==='frag'?'#aaa':g.type==='molotov'?'#cc4400':'#aaaaff';ctx.beginPath();ctx.arc(sx,sy,5,0,Math.PI*2);ctx.fill();});
   firePatches.forEach(f=>{const sx=f.x-camX,sy=f.y-camY;for(let i=0;i<4;i++){ctx.globalAlpha=Math.min(1,f.timer/2)*0.5;ctx.fillStyle=`hsl(${randInt(10,40)},100%,55%)`;ctx.beginPath();ctx.arc(sx+rand(-f.radius*.5,f.radius*.5),sy+rand(-f.radius*.5,f.radius*.5),rand(8,20),0,Math.PI*2);ctx.fill();}ctx.globalAlpha=1;});
+}
+
+// ── Deployables (mines / claymores / sentry) ─────────────────────────────────
+let deployables=[];
+const DEPLOY_DEF={
+  mine:    {arm:1.0,radius:95, dmg:220},
+  claymore:{arm:1.0,range:175,arc:0.95,dmg:300},
+  sentry:  {arm:0.4},
+};
+function cycleDeployable(){
+  const order=['mine','claymore','sentry'];
+  const owned=order.filter(t=>player.deployables[t]>0);
+  if(owned.length===0)return;
+  const i=owned.indexOf(player.selectedDeployable);
+  player.selectedDeployable=owned[(i+1)%owned.length];
+}
+function placeDeployable(){
+  if(player.lastStand)return;
+  let t=player.selectedDeployable;
+  if(!player.deployables[t]||player.deployables[t]<=0){
+    const next=['mine','claymore','sentry'].find(tp=>player.deployables[tp]>0);
+    if(!next){addNotif('No deployables! Buy from 🧺 Shop','#ff4444',2.5);return;}
+    t=player.selectedDeployable=next;
+  }
+  if(isWall(player.x,player.y)){addNotif('Cannot place here','#ff8800',1.5);return;}
+  player.deployables[t]--;
+  const def=DEPLOY_DEF[t];
+  deployables.push({type:t,x:player.x,y:player.y,angle:player.angle,arm:def.arm,...def});
+  addNotif(`${t.toUpperCase()} placed`,'#ffaa00',1.5);
+}
+function updateDeployables(dt){
+  deployables=deployables.filter(d=>{
+    if(d.arm>0){d.arm-=dt;return true;}
+    if(d.type==='mine'){
+      for(const e of enemies){if(e.alive&&Math.hypot(e.x-d.x,e.y-d.y)<d.radius+e.r){explodeAt(d.x,d.y,d.radius,d.dmg,12);return false;}}
+    } else if(d.type==='claymore'){
+      for(const e of enemies){if(!e.alive)continue;const dd=Math.hypot(e.x-d.x,e.y-d.y);if(dd>d.range+e.r)continue;
+        const ang=Math.atan2(e.y-d.y,e.x-d.x);const diff=Math.abs(((ang-d.angle+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI);
+        if(diff<d.arc){explodeAt(d.x+Math.cos(d.angle)*d.range*0.4,d.y+Math.sin(d.angle)*d.range*0.4,d.range*0.6,d.dmg,14);return false;}}
+    }
+    return true;
+  });
+}
+function drawDeployables(camX,camY){
+  const t=performance.now();
+  deployables.forEach(d=>{const sx=d.x-camX,sy=d.y-camY,armed=d.arm<=0,blink=Math.sin(t/(armed?160:420))>0;
+    if(d.type==='mine'){
+      ctx.fillStyle=armed?'#7a2a2a':'#444';ctx.beginPath();ctx.arc(sx,sy,7,0,Math.PI*2);ctx.fill();
+      ctx.strokeStyle='#222';ctx.lineWidth=1;ctx.stroke();
+      if(blink){ctx.fillStyle='#ff3300';ctx.beginPath();ctx.arc(sx,sy,2.5,0,Math.PI*2);ctx.fill();}
+    } else if(d.type==='claymore'){
+      ctx.save();ctx.translate(sx,sy);ctx.rotate(d.angle);
+      ctx.fillStyle=armed?'#2f6b32':'#444';ctx.fillRect(-3,-9,6,18);
+      ctx.fillStyle='#1b4d1f';ctx.fillRect(1,-9,3,18);
+      ctx.restore();
+      if(blink){ctx.fillStyle='#ff3300';ctx.beginPath();ctx.arc(sx,sy,2,0,Math.PI*2);ctx.fill();}
+    }
+  });
 }
 
 // ── Interact ───────────────────────────────────────────────────────────────
@@ -893,6 +962,21 @@ function drawHUD(){
     ctx.fillText(g.substring(0,5).toUpperCase(),gx+28,gy+12);
     ctx.fillStyle=cnt>0?'#fff':'#555';ctx.font='bold 11px Courier New';ctx.fillText(`x${cnt}`,gx+28,gy+24);
   });
+  // Deployables (left of grenades)
+  const dCnt=(player.deployables.mine||0)+(player.deployables.claymore||0)+(player.deployables.sentry||0);
+  if(dCnt>0||deployables.length>0){
+    const dcol={mine:'#c0392b',claymore:'#2f8f3a',sentry:'#ffaa00'};
+    const dbX=W/2-110-150;
+    ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(dbX,H-60,140,46);
+    ctx.fillStyle='#555';ctx.font='bold 9px Courier New';ctx.textAlign='center';ctx.fillText('DEPLOY  [F] place  [C] cycle',dbX+70,H-49);
+    ['mine','claymore','sentry'].forEach((d,i)=>{
+      const sel=player.selectedDeployable===d,cnt=player.deployables[d]||0,gx=dbX+8+i*44,gy=H-42;
+      ctx.fillStyle=sel?dcol[d]+'44':'#111';ctx.fillRect(gx,gy,40,28);
+      ctx.strokeStyle=sel?dcol[d]:'#333';ctx.lineWidth=sel?2:1;ctx.strokeRect(gx,gy,40,28);
+      ctx.fillStyle=cnt>0?dcol[d]:'#444';ctx.font=(sel?'bold ':'')+'8px Courier New';ctx.textAlign='center';ctx.fillText(d.substring(0,4).toUpperCase(),gx+20,gy+12);
+      ctx.fillStyle=cnt>0?'#fff':'#555';ctx.font='bold 11px Courier New';ctx.fillText(`x${cnt}`,gx+20,gy+24);
+    });
+  }
   // Score
   ctx.fillStyle='rgba(0,0,0,0.65)';ctx.fillRect(W/2-120,10,240,44);
   ctx.fillStyle='#ffdd00';ctx.font='bold 16px Courier New';ctx.textAlign='center';ctx.fillText(`SCORE: ${score}`,W/2,28);
@@ -1016,20 +1100,20 @@ function drawBigMap(){
 // ── Buy station UI ─────────────────────────────────────────────────────────
 function drawBuyStation(){
   if(!buyStationOpen)return;
-  const ow=540,oh=380,ox=W/2-ow/2,oy=H/2-oh/2;
+  const items=getTabItems();
+  const ow=620,oh=110+Math.max(items.length,1)*72,ox=W/2-ow/2,oy=H/2-oh/2,tw=ow/SHOP_TABS.length;
   ctx.fillStyle='rgba(0,0,0,0.97)';ctx.fillRect(ox,oy,ow,oh);
   ctx.strokeStyle='#2ecc71';ctx.lineWidth=2;ctx.strokeRect(ox,oy,ow,oh);
   ctx.font='20px sans-serif';ctx.textAlign='center';ctx.fillText('🧺',W/2-80,oy+28);
   ctx.fillStyle='#2ecc71';ctx.font='bold 16px Courier New';ctx.textAlign='center';ctx.fillText('BUY STATION',W/2+10,oy+26);
   ctx.fillStyle='#44ff88';ctx.font='bold 13px Courier New';ctx.fillText(`Balance: £${currency}`,W/2,oy+44);
   SHOP_TABS.forEach((tab,i)=>{
-    const tx=ox+i*(ow/4),ty=oy+52,active=activeTab===tab;
-    ctx.fillStyle=active?'#1a3a1a':'#080808';ctx.fillRect(tx,ty,ow/4,26);
-    ctx.strokeStyle=active?'#2ecc71':'#1a2a1a';ctx.lineWidth=1;ctx.strokeRect(tx,ty,ow/4,26);
-    ctx.fillStyle=active?'#2ecc71':'#444';ctx.font=(active?'bold ':'')+' 11px Courier New';ctx.textAlign='center';
-    ctx.fillText(tab.toUpperCase(),tx+ow/8,ty+17);
+    const tx=ox+i*tw,ty=oy+52,active=activeTab===tab;
+    ctx.fillStyle=active?'#1a3a1a':'#080808';ctx.fillRect(tx,ty,tw,26);
+    ctx.strokeStyle=active?'#2ecc71':'#1a2a1a';ctx.lineWidth=1;ctx.strokeRect(tx,ty,tw,26);
+    ctx.fillStyle=active?'#2ecc71':'#444';ctx.font=(active?'bold ':'')+' 10px Courier New';ctx.textAlign='center';
+    ctx.fillText(tab.toUpperCase(),tx+tw/2,ty+17);
   });
-  const items=getTabItems();
   items.forEach((item,i)=>{
     const ix=ox+12,iy=oy+86+i*72,iw=ow-24;
     const can=currency>=item.cost&&item.id!=='pistolAmmo';
@@ -1044,13 +1128,13 @@ function drawBuyStation(){
     ctx.fillStyle='#555';ctx.font='9px Courier New';ctx.fillText(item.desc,ix+44,iy+56);
   });
   ctx.fillStyle='#333';ctx.font='10px Courier New';ctx.textAlign='center';
-  ctx.fillText('← → switch tabs  |  1-4 quick buy  |  [Enter] or [ESC] close',W/2,oy+oh-10);
+  ctx.fillText('← → switch tabs  |  1-9 quick buy  |  [Enter] or [ESC] close',W/2,oy+oh-10);
 }
 function handleBuyClick(mx,my){
-  const ow=540,oh=380,ox=W/2-ow/2,oy=H/2-oh/2;
-  if(mx<ox||mx>ox+ow||my<oy||my>oy+oh){buyStationOpen=false;return;}
-  SHOP_TABS.forEach((tab,i)=>{if(mx>ox+i*(ow/4)&&mx<ox+(i+1)*(ow/4)&&my>oy+52&&my<oy+78)activeTab=tab;});
   const items=getTabItems();
+  const ow=620,oh=110+Math.max(items.length,1)*72,ox=W/2-ow/2,oy=H/2-oh/2,tw=ow/SHOP_TABS.length;
+  if(mx<ox||mx>ox+ow||my<oy||my>oy+oh){buyStationOpen=false;return;}
+  SHOP_TABS.forEach((tab,i)=>{if(mx>ox+i*tw&&mx<ox+(i+1)*tw&&my>oy+52&&my<oy+78)activeTab=tab;});
   items.forEach((item,i)=>{const ix=ox+12,iy=oy+86+i*72;if(mx>ix&&mx<ix+ow-24&&my>iy&&my<iy+66)buyItem(item);});
 }
 
@@ -1181,7 +1265,7 @@ function startGame(mapIdx){
   globalLevel=1;score=0;currency=0;
   sessionCoins=0;sessionKills=0;
   waveActive=false;levelComplete=false;levelStartTimer=2.5;levelTimer=0;
-  bullets=[];particles=[];pickups=[];enemies=[];grenadeObjects=[];firePatches=[];notifs=[];
+  bullets=[];particles=[];pickups=[];enemies=[];grenadeObjects=[];firePatches=[];notifs=[];deployables=[];
   lightsOn=false;buyStationOpen=false;inventoryOpen=false;bigMapOpen=false;workshopOpen=false;
   inventoryAnim=0;inventorySelected=0;workshopSelectedWeapon='pistol';
   resetUpgrades();
@@ -1426,7 +1510,7 @@ function loop(now){
   else if(state===STATE.PLAYING||state===STATE.PAUSED){
     if(state===STATE.PLAYING){
       updatePlayer(dt);updateBullets(dt);updateParticles(dt);updatePickups(dt);
-      updateGrenades(dt);updateBarricades(dt);updateInventoryAnim(dt);updateNotifs(dt);
+      updateGrenades(dt);updateDeployables(dt);updateBarricades(dt);updateInventoryAnim(dt);updateNotifs(dt);
       if(waveActive){
         updateEnemies(dt);
         if(enemies.length===0){waveActive=false;levelComplete=true;levelTimer=isBossLevel()?9.0:4.0;spawnPickup('health',player.x+rand(-120,120),player.y+rand(-120,120));if(isBossLevel())addNotif('Grab the boss loot before the next level!','#ffcc44',5);}
@@ -1437,7 +1521,7 @@ function loop(now){
     const camX=Math.round(player.x-W/2),camY=Math.round(player.y-H/2);
     ctx.fillStyle=mapCfg.bg;ctx.fillRect(0,0,W,H);
     drawWorld(camX,camY);drawDebris(camX,camY);drawMapObjects(camX,camY);
-    drawPickups(camX,camY);drawParticles(camX,camY);
+    drawDeployables(camX,camY);drawPickups(camX,camY);drawParticles(camX,camY);
     drawGrenades(camX,camY);drawBullets(camX,camY);
     enemies.forEach(e=>drawEnemy(e,camX,camY));
     drawPlayer(camX,camY);drawFlashlight(camX,camY);
