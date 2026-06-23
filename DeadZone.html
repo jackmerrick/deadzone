@@ -1659,7 +1659,7 @@ function loop(now){
       updateGrenades(dt);updateDeployables(dt);updateAirBombs(dt);updateBarricades(dt);updateInventoryAnim(dt);updateNotifs(dt);
       if(waveActive){
         updateEnemies(dt);
-        if(enemies.length===0){waveActive=false;levelComplete=true;levelTimer=isBossLevel()?9.0:4.0;spawnPickup('health',player.x+rand(-120,120),player.y+rand(-120,120));if(isBossLevel())addNotif('Grab the boss loot before the next level!','#ffcc44',5);}
+        if(enemies.length===0){waveActive=false;levelComplete=true;levelTimer=isBossLevel()?12.0:10.0;spawnPickup('health',player.x+rand(-120,120),player.y+rand(-120,120));if(isBossLevel())addNotif('Grab the boss loot before the next level!','#ffcc44',5);}
       }
       if(levelComplete){levelTimer-=dt;if(levelTimer<=0){levelComplete=false;advanceLevel();}}
       if(!waveActive&&!levelComplete){if(levelStartTimer>0){levelStartTimer-=dt;if(levelStartTimer<=0)startWave();}}
