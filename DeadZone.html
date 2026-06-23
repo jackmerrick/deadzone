@@ -1639,7 +1639,16 @@ function drawOverlay(title,col,lines,b1,b2){
 }
 function drawGameOver(){drawOverlay('GAME OVER','#e63946',[{text:`SCORE: ${score}`,col:'#fff',font:'bold 22px Courier New'},{text:`BEST: ${highScore}`,col:'#ffdd00',font:'16px Courier New'},{text:`Level ${globalLevel}/20  ·  £${currency}`,col:'#666',font:'12px Courier New'}],{label:'RETRY',col:'#8a1010',hov:'#e63946',border:'#e63946'},{label:'MENU',col:'#111',hov:'#333'});}
 function drawWin(){drawOverlay('YOU WIN!','#2ecc71',[{text:'ALL 20 LEVELS CLEARED!',col:'#888',font:'15px Courier New'},{text:`SCORE: ${score}`,col:'#fff',font:'bold 22px Courier New'},{text:score>=highScore?'NEW HIGH SCORE!':'Best: '+highScore,col:'#ffdd00',font:'16px Courier New'}],{label:'PLAY AGAIN',col:'#1a5a2a',hov:'#2ecc71',border:'#2ecc71'},{label:'MENU',col:'#111',hov:'#333'});}
-function drawPaused(){ctx.fillStyle='rgba(0,0,0,0.8)';ctx.fillRect(0,0,W,H);ctx.fillStyle='#fff';ctx.font='bold 50px Courier New';ctx.textAlign='center';ctx.fillText('PAUSED',W/2,H/2-10);ctx.fillStyle='#555';ctx.font='14px Courier New';ctx.fillText('ESC to resume',W/2,H/2+30);}
+const PAUSE_QUIT={w:170,h:42,get x(){return W-this.w-20;},y:20};
+function drawPaused(){
+  ctx.fillStyle='rgba(0,0,0,0.8)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#fff';ctx.font='bold 50px Courier New';ctx.textAlign='center';ctx.fillText('PAUSED',W/2,H/2-10);
+  ctx.fillStyle='#555';ctx.font='14px Courier New';ctx.fillText('ESC to resume',W/2,H/2+30);
+  const b=PAUSE_QUIT,hov=mHov(b.x,b.y,b.w,b.h);
+  ctx.fillStyle=hov?'#7a1010':'#3a0808';ctx.fillRect(b.x,b.y,b.w,b.h);
+  ctx.strokeStyle='#e63946';ctx.lineWidth=2;ctx.strokeRect(b.x,b.y,b.w,b.h);
+  ctx.fillStyle='#fff';ctx.font='bold 14px Courier New';ctx.textAlign='center';ctx.fillText('QUIT TO MENU',b.x+b.w/2,b.y+26);
+}
 
 // ── Click handling ─────────────────────────────────────────────────────────
 function handleClick(e){
@@ -1650,6 +1659,7 @@ function handleClick(e){
   if(bigMapOpen){bigMapOpen=false;return;}
   if(state===STATE.PLAYING&&airstrikePending){const camX=player.x-W/2,camY=player.y-H/2;callAirstrike(mx+camX,my+camY);airstrikePending=false;return;}
   if(state===STATE.MENU){for(const reg of menuRegions){if(mx>reg.x&&mx<reg.x+reg.w&&my>reg.y&&my<reg.y+reg.h){reg.action();break;}}}
+  else if(state===STATE.PAUSED){const b=PAUSE_QUIT;if(mx>b.x&&mx<b.x+b.w&&my>b.y&&my<b.y+b.h){commitRun(false);state=STATE.MENU;menuTab='main';}}
   else if(state===STATE.GAME_OVER){const by=H/2+80;if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44)restartGame();if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44){state=STATE.MENU;menuTab='main';}}
   else if(state===STATE.WIN){const by=H/2+80;if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44)restartGame();if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44){state=STATE.MENU;menuTab='main';}}
 }
