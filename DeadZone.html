@@ -444,18 +444,19 @@ function initPlayer(){
   quickReviveUsed=false;
   const sp=findSafeSpawn();
   player={x:sp.x,y:sp.y,speed:185,hp:100,maxHp:100,angle:0,radius:15,weapon:'pistol',
-    ammo:{pistol:Infinity,shotgun:0,rifle:0,sniper:0,machinegun:0},weapons:['pistol'],invincible:0,
+    ammo:{pistol:Infinity,shotgun:0,rifle:0,sniper:0,machinegun:0},weapons:['knife','pistol'],invincible:0,
     flashLen:290,flashAngle:Math.PI/3.8,grenades:{frag:0,molotov:0,flashbang:0},
     selectedGrenade:'frag',armourHp:0,maxArmourHp:0,lastStand:false,lastStandTimer:0};
 }
 const WEAPONS={
+  knife:     {dmg:300,cd:0.42,melee:true,range:54,arc:0.85,color:'#d6d6e0'},
   pistol:    {dmg:25, cd:0.38,spd:620, spread:0.05,  pellets:1,color:'#ffe566'},
   shotgun:   {dmg:18, cd:0.75,spd:480, spread:0.28,  pellets:6,color:'#ff8800'},
   rifle:     {dmg:42, cd:0.18,spd:950, spread:0.018, pellets:1,color:'#44ccff'},
   sniper:    {dmg:130,cd:1.2, spd:1400,spread:0.005, pellets:1,color:'#ff44ff'},
   machinegun:{dmg:22, cd:0.06,spd:780, spread:0.055, pellets:1,color:'#ffcc44'},
 };
-const ALL_WEAPONS=['pistol','shotgun','rifle','sniper','machinegun'];
+const ALL_WEAPONS=['knife','pistol','shotgun','rifle','sniper','machinegun'];
 let bullets=[],lastShot=0;
 function shoot(){
   if(player.lastStand&&player.weapon!=='pistol')return;
@@ -465,12 +466,28 @@ function shoot(){
   const w=getWeaponStats(player.weapon);
   const cd=w.cd/(perks.doubleTap?2:1);
   if(now-lastShot<cd)return;
+  if(w.melee){lastShot=now;meleeAttack(w);return;}
   if(player.ammo[player.weapon]<=0)return;
   lastShot=now;
   if(player.weapon!=='pistol')player.ammo[player.weapon]--;
   for(let i=0;i<w.pellets;i++){const a=player.angle+rand(-w.spread,w.spread);bullets.push({x:player.x,y:player.y,vx:Math.cos(a)*w.spd,vy:Math.sin(a)*w.spd,dmg:w.dmg,life:w.life||1.6,color:w.color,fromPlayer:true});}
   spawnMuzzle(player.x+Math.cos(player.angle)*22,player.y+Math.sin(player.angle)*22,player.angle);
   addShake(3.5,0.1);
+}
+function meleeAttack(w){
+  const range=w.range||50,arc=w.arc||0.8;let hit=false;
+  for(const e of enemies){if(!e.alive)continue;
+    if(dist(player,e)>range+e.r)continue;
+    const ang=Math.atan2(e.y-player.y,e.x-player.x);
+    const diff=Math.abs(((ang-player.angle+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI);
+    if(diff>arc)continue;
+    hit=true;
+    if(e.type==='boss'){e.hp-=w.dmg;spawnBlood(e.x,e.y,8);if(e.hp<=0)killEnemy(e);}
+    else{spawnBlood(e.x,e.y,12);killEnemy(e);}
+  }
+  // slash arc effect
+  for(let i=0;i<7;i++){const a=player.angle+rand(-arc,arc),s=rand(3,7);particles.push({x:player.x+Math.cos(a)*range*0.6,y:player.y+Math.sin(a)*range*0.6,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:0.18,maxLife:0.18,r:rand(2,4),color:'#e8e8f0'});}
+  addShake(hit?4:1.5,0.08);
 }
 function cycleGrenade(){const types=['frag','molotov','flashbang'];const i=types.indexOf(player.selectedGrenade);player.selectedGrenade=types[(i+1)%types.length];}
 
@@ -846,7 +863,7 @@ function drawHUD(){
   const wn=ALL_WEAPONS.length,wsW=42,wsGap=2,wbW=wn*(wsW+wsGap)+12,wbX=W-14-wbW;
   ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(wbX,H-60,wbW,46);
   ctx.fillStyle='#fff';ctx.font='bold 13px Courier New';ctx.textAlign='right';
-  ctx.fillText(`[ ${player.weapon.toUpperCase()} ]  ${player.weapon==='pistol'?'∞':player.ammo[player.weapon]}`,W-16,H-43);
+  ctx.fillText(`[ ${player.weapon.toUpperCase()} ]  ${WEAPONS[player.weapon].melee?'⚔':player.weapon==='pistol'?'∞':player.ammo[player.weapon]}`,W-16,H-43);
   ALL_WEAPONS.forEach((w,i)=>{
     const has=player.weapons.includes(w);
     const upgraded=has&&Object.values(weaponUpgrades[w]||{}).some(v=>v>0);
@@ -1121,7 +1138,7 @@ function drawInventory(){
     else if(active){ctx.strokeStyle=WEAPONS[w].color;ctx.lineWidth=1;ctx.strokeRect(sx+6,y-14,pw-12,19);}
     ctx.fillStyle=sel?'#fff':(active?WEAPONS[w].color:(has?'#bbb':'#444'));
     ctx.font=(active||sel?'bold ':'')+' 10px Courier New';ctx.textAlign='left';
-    const aStr=!has?(w==='machinegun'?'(boss drop)':'(shop only)'):w==='pistol'?'∞':player.ammo[w];
+    const aStr=!has?(w==='machinegun'?'(boss drop)':'(shop only)'):WEAPONS[w].melee?'⚔ melee':w==='pistol'?'∞':player.ammo[w];
     const upStr=upgraded?'★':'';
     ctx.fillText(`${sel?'▶':active?'•':' '} [${i+1}] ${w.substring(0,8).toUpperCase().padEnd(8)} ${aStr}${upStr}`,sx+10,y);y+=18;
   });
