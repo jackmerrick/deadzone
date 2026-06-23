@@ -380,6 +380,7 @@ const SHOP_ITEMS_BY_TAB={
   deployables:[
     {id:'mine',     name:'Proximity Mine x2',cost:350,type:'deployable',desc:'Place [F], cycle [C] — detonates when zombies step near'},
     {id:'claymore', name:'Claymore x2',      cost:400,type:'deployable',desc:'Place [F], cycle [C] — directional blast facing your aim'},
+    {id:'sentry',   name:'Sentry Gun',       cost:500,type:'deployable',qty:1,desc:'Place [F] — auto-fires at zombies, can be destroyed'},
   ],
   armour:[
     {id:'lightArmour',name:'Light Armour',cost:400,type:'armour',desc:'+50 armour HP, absorbs 70% of damage'},
@@ -542,8 +543,9 @@ let deployables=[];
 const DEPLOY_DEF={
   mine:    {arm:1.0,radius:95, dmg:220},
   claymore:{arm:1.0,range:175,arc:0.95,dmg:300},
-  sentry:  {arm:0.4},
+  sentry:  {arm:0.4,hp:320,maxHp:320,range:340,fireCd:0,fireRate:0.16,dmg:32,bulletSpd:780},
 };
+const SENTRY_CAP=3;
 function cycleDeployable(){
   const order=['mine','claymore','sentry'];
   const owned=order.filter(t=>player.deployables[t]>0);
@@ -560,6 +562,7 @@ function placeDeployable(){
     t=player.selectedDeployable=next;
   }
   if(isWall(player.x,player.y)){addNotif('Cannot place here','#ff8800',1.5);return;}
+  if(t==='sentry'&&deployables.filter(d=>d.type==='sentry').length>=SENTRY_CAP){addNotif(`Max ${SENTRY_CAP} sentries deployed`,'#ff8800',2);return;}
   player.deployables[t]--;
   const def=DEPLOY_DEF[t];
   deployables.push({type:t,x:player.x,y:player.y,angle:player.angle,arm:def.arm,...def});
@@ -574,9 +577,30 @@ function updateDeployables(dt){
       for(const e of enemies){if(!e.alive)continue;const dd=Math.hypot(e.x-d.x,e.y-d.y);if(dd>d.range+e.r)continue;
         const ang=Math.atan2(e.y-d.y,e.x-d.x);const diff=Math.abs(((ang-d.angle+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI);
         if(diff<d.arc){explodeAt(d.x+Math.cos(d.angle)*d.range*0.4,d.y+Math.sin(d.angle)*d.range*0.4,d.range*0.6,d.dmg,14);return false;}}
+    } else if(d.type==='sentry'){
+      return updateSentry(d,dt);
     }
     return true;
   });
+}
+function updateSentry(d,dt){
+  d.fireCd-=dt;
+  // zombies in melee range attack the sentry
+  for(const e of enemies){if(!e.alive)continue;if(Math.hypot(e.x-d.x,e.y-d.y)<20+e.r&&e.atkCd<=0){d.hp-=e.dmg;e.atkCd=e.atkRate;spawnBlood(d.x,d.y,4,'#ffaa00');}}
+  if(d.hp<=0){explodeAt(d.x,d.y,75,50,9);addNotif('Sentry destroyed','#ff6600',2);return false;}
+  // target nearest live enemy in range and fire
+  let tgt=null,best=d.range;
+  for(const e of enemies){if(!e.alive)continue;const dd=Math.hypot(e.x-d.x,e.y-d.y);if(dd<best){best=dd;tgt=e;}}
+  if(tgt){
+    d.angle=Math.atan2(tgt.y-d.y,tgt.x-d.x);
+    if(d.fireCd<=0){
+      d.fireCd=d.fireRate;
+      const a=d.angle+rand(-0.04,0.04);
+      bullets.push({x:d.x+Math.cos(d.angle)*16,y:d.y+Math.sin(d.angle)*16,vx:Math.cos(a)*d.bulletSpd,vy:Math.sin(a)*d.bulletSpd,dmg:d.dmg,life:1.4,color:'#ffdd66',fromPlayer:true});
+      spawnMuzzle(d.x+Math.cos(d.angle)*18,d.y+Math.sin(d.angle)*18,d.angle);
+    }
+  }
+  return true;
 }
 function drawDeployables(camX,camY){
   const t=performance.now();
@@ -591,6 +615,15 @@ function drawDeployables(camX,camY){
       ctx.fillStyle='#1b4d1f';ctx.fillRect(1,-9,3,18);
       ctx.restore();
       if(blink){ctx.fillStyle='#ff3300';ctx.beginPath();ctx.arc(sx,sy,2,0,Math.PI*2);ctx.fill();}
+    } else if(d.type==='sentry'){
+      ctx.save();ctx.translate(sx,sy);
+      ctx.fillStyle='#2a2a2a';ctx.beginPath();ctx.arc(0,0,12,0,Math.PI*2);ctx.fill();
+      ctx.strokeStyle=armed?'#ffaa00':'#666';ctx.lineWidth=2;ctx.stroke();
+      ctx.rotate(d.angle);ctx.fillStyle='#999';ctx.fillRect(0,-3,22,6);ctx.fillStyle='#555';ctx.fillRect(18,-4,4,8);
+      ctx.restore();
+      const ratio=Math.max(0,d.hp/d.maxHp);
+      ctx.fillStyle='#300';ctx.fillRect(sx-16,sy-21,32,4);
+      ctx.fillStyle=ratio>0.4?'#ffaa00':'#ff4400';ctx.fillRect(sx-16,sy-21,32*ratio,4);
     }
   });
 }
