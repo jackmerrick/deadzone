@@ -224,6 +224,7 @@ document.addEventListener('keydown',e=>{
 
   if(state===STATE.PLAYING){
     if(e.key==='g'||e.key==='G')throwGrenade();
+    if(e.key==='y'||e.key==='Y')cycleWeapon();
     if(e.key==='f'||e.key==='F')placeDeployable();
     if(e.key==='c'||e.key==='C')cycleDeployable();
     if(e.key==='e'||e.key==='E')triggerKillstreak();
@@ -520,6 +521,13 @@ function meleeAttack(w){
   // slash arc effect
   for(let i=0;i<7;i++){const a=player.angle+rand(-arc,arc),s=rand(3,7);particles.push({x:player.x+Math.cos(a)*range*0.6,y:player.y+Math.sin(a)*range*0.6,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:0.18,maxLife:0.18,r:rand(2,4),color:'#e8e8f0'});}
   addShake(hit?4:1.5,0.08);
+}
+function cycleWeapon(){
+  if(player.lastStand)return;
+  const owned=ALL_WEAPONS.filter(w=>player.weapons.includes(w));
+  if(owned.length<2)return;
+  const i=owned.indexOf(player.weapon);
+  player.weapon=owned[(i+1)%owned.length];
 }
 function cycleGrenade(){const types=['frag','molotov','flashbang'];const i=types.indexOf(player.selectedGrenade);player.selectedGrenade=types[(i+1)%types.length];}
 
