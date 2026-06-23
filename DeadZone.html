@@ -367,9 +367,13 @@ function randomSwitchTile(){
   }
   return SWITCH_POS[mapCfg.id]||{tx:15,ty:8};
 }
-function setupMapObjects(){
-  // Lights switch exists every level now, at a random hidden location
+function newLightsBlock(){
+  // Turns the lights off and hides a fresh switch — called once per 5-level block
+  lightsOn=false;
   const sp=randomSwitchTile();lightsSwitch={x:sp.tx*TILE+TILE/2,y:sp.ty*TILE+TILE/2};
+}
+function setupMapObjects(){
+  // NOTE: the lights switch persists across a 5-level block — placed by newLightsBlock(), not here
   buyStationPos={x:27*TILE+TILE/2,y:27*TILE+TILE/2};
   workshopPos={x:7*TILE+TILE/2,y:11*TILE+TILE/2}; // tx=7,ty=11 — clear in all maps
   perkMachines=PERKS_DEF.map((pd,i)=>({...pd,x:PERK_POS[i].tx*TILE+TILE/2,y:PERK_POS[i].ty*TILE+TILE/2,bought:!!perks[pd.id]}));
@@ -1500,6 +1504,7 @@ function startGame(mapIdx){
   inventoryAnim=0;inventorySelected=0;workshopSelectedWeapon='pistol';
   resetUpgrades();
   generateMap(MAPS[fixedMapIdx]);
+  newLightsBlock();
   initPlayer();
   gameStartTime=performance.now()/1000;
   state=STATE.PLAYING;
@@ -1546,13 +1551,15 @@ function advanceLevel(){
   } else {
     setupMapObjects();
   }
-  // Each round starts in the dark; the flashlight battery is NOT refilled — it keeps draining across the run
-  lightsOn=false;player.flashLen=290;player.flashAngle=Math.PI/3.8;
+  // Lights only go out at the start of each 5-level block; otherwise they (and the switch) persist.
+  // The flashlight battery is never refilled — it keeps draining across the run whenever lights are off.
+  const newBlock=(globalLevel-1)%5===0;
+  if(newBlock)newLightsBlock();
   player.lastStand=false;player.invincible=0;
   player.hp=Math.min(player.hp+20,player.maxHp);
   bullets=[];grenadeObjects=[];firePatches=[];particles=[];
   levelStartTimer=3.0;
-  if(!lightsOn)addNotif('Lights are OFF — flashlight running down. Find the switch!','#ffdd00',4);
+  if(newBlock&&!lightsOn)addNotif('Power is OUT in this area — flashlight running down. Find the switch!','#ffdd00',4);
   if(isBossLevel())addNotif('⚠ WARNING: Boss level! Use workshop to upgrade first','#ff3300',4);
   else addNotif(`Level ${globalLevel}/20 — defeat all enemies`,'#e63946',3);
 }
