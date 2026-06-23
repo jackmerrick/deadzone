@@ -547,16 +547,16 @@ function throwGrenade(){
 }
 function updateGrenades(dt){
   grenadeObjects=grenadeObjects.filter(g=>{g.x+=g.vx*dt;g.y+=g.vy*dt;g.vx*=0.9;g.vy*=0.9;if(isWall(g.x,g.y)){g.vx*=-0.5;g.vy*=-0.5;}g.timer-=dt;if(g.timer<=0&&!g.exploded){g.exploded=true;explodeGrenade(g);return false;}return !g.exploded;});
-  firePatches=firePatches.filter(f=>{f.timer-=dt;enemies.forEach(e=>{if(!e.alive)return;if(Math.hypot(e.x-f.x,e.y-f.y)<f.radius+e.r){e.hp-=20*dt;if(e.hp<=0)killEnemy(e);}});return f.timer>0;});
+  firePatches=firePatches.filter(f=>{f.timer-=dt;enemies.forEach(e=>{if(!e.alive)return;if(Math.hypot(e.x-f.x,e.y-f.y)<f.radius+e.r){e.hp-=45*dt;if(e.hp<=0)killEnemy(e);}});return f.timer>0;});
 }
 function explodeAt(x,y,radius,dmg,shake){
   spawnExplosion(x,y,Math.max(12,Math.round(radius/5)));addShake(shake||10,0.35);
   enemies.forEach(e=>{if(!e.alive)return;const d=Math.hypot(e.x-x,e.y-y);if(d<radius+e.r){e.hp-=dmg*(1-d/(radius+e.r));if(e.hp<=0)killEnemy(e);}});
 }
 function explodeGrenade(g){
-  if(g.type==='frag'){explodeAt(g.x,g.y,120,150);}
-  else if(g.type==='molotov'){spawnExplosion(g.x,g.y,10);firePatches.push({x:g.x,y:g.y,radius:70,timer:5});}
-  else if(g.type==='flashbang'){spawnExplosion(g.x,g.y,8);enemies.forEach(e=>{if(!e.alive)return;if(Math.hypot(e.x-g.x,e.y-g.y)<200)e.stunned=3.0;});}
+  if(g.type==='frag'){explodeAt(g.x,g.y,155,300,13);}
+  else if(g.type==='molotov'){spawnExplosion(g.x,g.y,12);firePatches.push({x:g.x,y:g.y,radius:95,timer:6});}
+  else if(g.type==='flashbang'){spawnExplosion(g.x,g.y,8);enemies.forEach(e=>{if(!e.alive)return;const d=Math.hypot(e.x-g.x,e.y-g.y);if(d<220){e.stunned=3.5;e.hp-=40;if(e.hp<=0)killEnemy(e);}});}
 }
 function drawGrenades(camX,camY){
   grenadeObjects.forEach(g=>{const sx=g.x-camX,sy=g.y-camY;ctx.fillStyle=g.type==='frag'?'#aaa':g.type==='molotov'?'#cc4400':'#aaaaff';ctx.beginPath();ctx.arc(sx,sy,5,0,Math.PI*2);ctx.fill();});
