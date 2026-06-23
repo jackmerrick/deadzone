@@ -824,7 +824,7 @@ function spawnEnemy(type){
 }
 function killEnemy(e){
   if(!e.alive)return;
-  e.alive=false;score+=e.val;currency+=10+Math.floor(e.val/100)*10;
+  e.alive=false;score+=e.val;currency+=80+Math.floor(e.val/100)*20;
   // Persistent progression: coins + all-time kills
   sessionKills++;
   sessionCoins+=e.type==='boss'?100:(1+Math.floor(e.val/100));
