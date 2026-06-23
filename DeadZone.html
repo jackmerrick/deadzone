@@ -129,7 +129,7 @@ let inventoryAnim=0,inventorySelected=0;
 let workshopSelectedWeapon='pistol';
 let weaponUpgrades={};
 let activeTab='weapons';
-const SHOP_TABS=['weapons','grenades','deployables','armour','ammo'];
+const SHOP_TABS=['weapons','grenades','deployables','killstreaks','armour','ammo'];
 
 // Upgrade definitions
 const UPGRADE_DEFS=[
@@ -226,6 +226,8 @@ document.addEventListener('keydown',e=>{
     if(e.key==='g'||e.key==='G')throwGrenade();
     if(e.key==='f'||e.key==='F')placeDeployable();
     if(e.key==='c'||e.key==='C')cycleDeployable();
+    if(e.key==='e'||e.key==='E')triggerKillstreak();
+    if(e.key==='v'||e.key==='V')cycleKillstreak();
     if(e.key==='q'||e.key==='Q'){if(buyStationOpen){const i=SHOP_TABS.indexOf(activeTab);activeTab=SHOP_TABS[(i+1)%SHOP_TABS.length];}else cycleGrenade();}
     if(buyStationOpen){
       if(e.key==='ArrowLeft'){const i=SHOP_TABS.indexOf(activeTab);activeTab=SHOP_TABS[(i-1+SHOP_TABS.length)%SHOP_TABS.length];}
@@ -338,6 +340,11 @@ const PERKS_DEF=[
   {id:'doubleTap',  name:'Double Tap',  cost:2000,color:'#ff3300',symbol:'🔫',desc:'2x Fire Rate'},
   {id:'quickRevive',name:'Quick Revive',cost:500, color:'#00aaff',symbol:'❤️',desc:'Revive from Last Stand once'},
 ];
+const KILLSTREAKS_DEF=[
+  {id:'airstrike',name:'Airstrike',     cost:5000, color:'#ff8800',symbol:'🛩',desc:'Click a spot — bombing run along a line'},
+  {id:'mortar',   name:'Mortar Barrage',cost:3500, color:'#ffaa33',symbol:'💥',desc:'Random explosions rain across the map'},
+  {id:'nuke',     name:'Nuke',          cost:10000,color:'#ffffff',symbol:'☢',desc:'Instantly kills every zombie on the map'},
+];
 const SWITCH_POS={city:{tx:15,ty:8},bunker:{tx:12,ty:15},wasteland:{tx:14,ty:14},graveyard:{tx:16,ty:16},arctic:{tx:14,ty:9}};
 const PERK_POS=[{tx:4,ty:4},{tx:26,ty:4},{tx:4,ty:26},{tx:26,ty:26}];
 const BARRICADE_POS={city:[{tx:8,ty:2,h:true},{tx:2,ty:8,h:false}],bunker:[{tx:11,ty:7,h:true},{tx:21,ty:14,h:false}],wasteland:[{tx:7,ty:7,h:true},{tx:22,ty:18,h:false}],graveyard:[{tx:6,ty:6,h:true},{tx:20,ty:20,h:false}],arctic:[{tx:9,ty:4,h:true},{tx:23,ty:19,h:false}]};
@@ -382,6 +389,11 @@ const SHOP_ITEMS_BY_TAB={
     {id:'claymore', name:'Claymore x2',      cost:400,type:'deployable',desc:'Place [F], cycle [C] — directional blast facing your aim'},
     {id:'sentry',   name:'Sentry Gun',       cost:500,type:'deployable',qty:1,desc:'Place [F] — auto-fires at zombies, can be destroyed'},
   ],
+  killstreaks:[
+    {id:'airstrike',name:'Airstrike',     cost:5000, type:'killstreak',desc:'[E] use, click a spot — bombing run along a line'},
+    {id:'mortar',   name:'Mortar Barrage',cost:3500, type:'killstreak',desc:'[E] use — explosions rain across the whole map'},
+    {id:'nuke',     name:'Nuke',          cost:10000,type:'killstreak',desc:'[E] use — instantly kills every zombie on the map'},
+  ],
   armour:[
     {id:'lightArmour',name:'Light Armour',cost:400,type:'armour',desc:'+50 armour HP, absorbs 70% of damage'},
     {id:'heavyArmour',name:'Heavy Armour',cost:800,type:'armour',desc:'+100 armour HP, absorbs 70% of damage'},
@@ -413,6 +425,10 @@ function buyItem(item){
     player.deployables[item.id]=(player.deployables[item.id]||0)+(item.qty||2);
     player.selectedDeployable=item.id;
     addNotif(`+${item.qty||2} ${item.name} — [F] place, [C] cycle`,'#ffaa00',3);
+  } else if(item.type==='killstreak'){
+    player.killstreaks[item.id]=(player.killstreaks[item.id]||0)+1;
+    player.selectedKillstreak=item.id;
+    addNotif(`${item.name} ready — [E] use, [V] cycle`,'#ff8800',3);
   } else if(item.type==='armour'){
     const add=item.id==='lightArmour'?50:100;
     player.armourHp=Math.min(player.armourHp+add,200);
@@ -460,7 +476,8 @@ function initPlayer(){
     ammo:{pistol:Infinity,shotgun:0,rifle:0,sniper:0,machinegun:0},weapons:['knife','pistol'],invincible:0,
     flashLen:290,flashAngle:Math.PI/3.8,grenades:{frag:0,molotov:0,flashbang:0},
     selectedGrenade:'frag',armourHp:0,maxArmourHp:0,lastStand:false,lastStandTimer:0,
-    deployables:{mine:0,claymore:0,sentry:0},selectedDeployable:'mine'};
+    deployables:{mine:0,claymore:0,sentry:0},selectedDeployable:'mine',
+    killstreaks:{airstrike:0,mortar:0,nuke:0},selectedKillstreak:'nuke'};
 }
 const WEAPONS={
   knife:     {dmg:300,cd:0.42,melee:true,range:54,arc:0.85,color:'#d6d6e0'},
@@ -625,6 +642,52 @@ function drawDeployables(camX,camY){
       ctx.fillStyle='#300';ctx.fillRect(sx-16,sy-21,32,4);
       ctx.fillStyle=ratio>0.4?'#ffaa00':'#ff4400';ctx.fillRect(sx-16,sy-21,32*ratio,4);
     }
+  });
+}
+
+// ── Killstreaks (nuke / airstrike / mortar) ──────────────────────────────────
+let airBombs=[],airstrikePending=false;
+let flashUntil=0,flashDur=0,flashColor='255,255,255';
+function triggerFlash(rgb,dur){flashColor=rgb;flashDur=dur;flashUntil=performance.now()/1000+dur;}
+function drawScreenFlash(){const now=performance.now()/1000;if(now<flashUntil){const a=(flashUntil-now)/flashDur;ctx.fillStyle=`rgba(${flashColor},${a*0.85})`;ctx.fillRect(0,0,W,H);}}
+function cycleKillstreak(){
+  const owned=KILLSTREAKS_DEF.map(k=>k.id).filter(t=>player.killstreaks[t]>0);
+  if(!owned.length)return;
+  const i=owned.indexOf(player.selectedKillstreak);
+  player.selectedKillstreak=owned[(i+1)%owned.length];
+}
+function triggerKillstreak(){
+  if(player.lastStand)return;
+  let id=player.selectedKillstreak;
+  if(!player.killstreaks[id]||player.killstreaks[id]<=0){
+    const next=KILLSTREAKS_DEF.map(k=>k.id).find(t=>player.killstreaks[t]>0);
+    if(!next){addNotif('No killstreaks! Buy from 🧺 Shop','#ff4444',2.5);return;}
+    id=player.selectedKillstreak=next;
+  }
+  if(id==='airstrike'){airstrikePending=true;addNotif('🛩 Airstrike armed — click a target location','#ff8800',4);return;}
+  player.killstreaks[id]--;
+  if(id==='nuke'){triggerFlash('255,255,255',0.7);addShake(26,0.8);enemies.forEach(e=>{if(e.alive)killEnemy(e);});addNotif('☢ NUKE — area cleared!','#ffffff',3.5);}
+  else if(id==='mortar')callMortar();
+}
+function callAirstrike(wx,wy){
+  if((player.killstreaks.airstrike||0)<=0)return;
+  player.killstreaks.airstrike--;
+  const dir=rand(0,Math.PI*2),n=10,spacing=72;
+  for(let i=0;i<n;i++){const off=(i-n/2)*spacing;airBombs.push({x:wx+Math.cos(dir)*off,y:wy+Math.sin(dir)*off,delay:0.8+i*0.11});}
+  addNotif('🛩 Airstrike inbound!','#ff8800',3);
+}
+function callMortar(){
+  for(let i=0;i<16;i++){airBombs.push({x:rand(TILE*2,(MAP_W-2)*TILE),y:rand(TILE*2,(MAP_H-2)*TILE),delay:0.3+i*0.17});}
+  addNotif('💥 Mortar barrage incoming!','#ffaa33',3);
+}
+function updateAirBombs(dt){
+  airBombs=airBombs.filter(b=>{b.delay-=dt;if(b.delay<=0){explodeAt(b.x,b.y,110,180,9);addShake(7,0.2);return false;}return true;});
+}
+function drawAirBombs(camX,camY){
+  airBombs.forEach(b=>{const sx=b.x-camX,sy=b.y-camY,p=1-Math.min(1,b.delay/1.5);
+    ctx.strokeStyle='rgba(255,90,0,0.55)';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(sx,sy,14,0,Math.PI*2);ctx.stroke();
+    ctx.fillStyle='rgba(255,120,0,0.22)';ctx.beginPath();ctx.arc(sx,sy,14*p,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='rgba(255,140,0,0.6)';ctx.beginPath();ctx.moveTo(sx-18,sy);ctx.lineTo(sx+18,sy);ctx.moveTo(sx,sy-18);ctx.lineTo(sx,sy+18);ctx.stroke();
   });
 }
 
@@ -809,7 +872,7 @@ function updatePlayer(dt){
   if(!isWall(player.x+r,ny)&&!isWall(player.x-r,ny)&&!isWall(player.x,ny+r)&&!isWall(player.x,ny-r))player.y=ny;
   const camX=player.x-W/2,camY=player.y-H/2;
   player.angle=Math.atan2(mouse.y+camY-player.y,mouse.x+camX-player.x);
-  if((mouse.down||keys[' '])&&!uiOpen)shoot();
+  if((mouse.down||keys[' '])&&!uiOpen&&!airstrikePending)shoot();
   if(player.invincible>0)player.invincible-=dt;
   if(!player.lastStand&&!uiOpen){
     for(let wi=0;wi<ALL_WEAPONS.length;wi++){if(keys[String(wi+1)]&&player.weapons.includes(ALL_WEAPONS[wi]))player.weapon=ALL_WEAPONS[wi];}
@@ -1010,6 +1073,14 @@ function drawHUD(){
       ctx.fillStyle=cnt>0?'#fff':'#555';ctx.font='bold 11px Courier New';ctx.fillText(`x${cnt}`,gx+20,gy+24);
     });
   }
+  // Killstreaks (left, below level panel)
+  const ksOwned=KILLSTREAKS_DEF.filter(k=>player.killstreaks[k.id]>0);
+  if(ksOwned.length){
+    const ky=globalLevel>=2&&!lightsOn?100:96;
+    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(10,ky,168,16+ksOwned.length*15);
+    ctx.fillStyle='#ff8800';ctx.font='bold 9px Courier New';ctx.textAlign='left';ctx.fillText('KILLSTREAKS  [E] use [V] cycle',16,ky+11);
+    ksOwned.forEach((k,i)=>{const sel=player.selectedKillstreak===k.id;ctx.fillStyle=sel?k.color:'#888';ctx.font=(sel?'bold ':'')+'10px Courier New';ctx.fillText(`${sel?'▶':'  '} ${k.symbol} ${k.name} x${player.killstreaks[k.id]}`,16,ky+25+i*15);});
+  }
   // Score
   ctx.fillStyle='rgba(0,0,0,0.65)';ctx.fillRect(W/2-120,10,240,44);
   ctx.fillStyle='#ffdd00';ctx.font='bold 16px Courier New';ctx.textAlign='center';ctx.fillText(`SCORE: ${score}`,W/2,28);
@@ -1048,6 +1119,12 @@ function drawHUD(){
   if(performance.now()/1000-gameStartTime<16){
     ctx.fillStyle='rgba(255,255,255,0.22)';ctx.font='9px Courier New';ctx.textAlign='center';
     ctx.fillText('WASD:Move  Click:Shoot  Enter:Interact  G:Grenade  Q:Cycle  Tab:Inventory  M:Map  ESC:Pause',W/2,H-6);
+  }
+  if(airstrikePending){
+    const mx=mouse.x,my=mouse.y,p=performance.now()/300;
+    ctx.strokeStyle='#ff8800';ctx.lineWidth=2;ctx.beginPath();ctx.arc(mx,my,22+Math.sin(p)*3,0,Math.PI*2);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(mx-30,my);ctx.lineTo(mx+30,my);ctx.moveTo(mx,my-30);ctx.lineTo(mx,my+30);ctx.stroke();
+    ctx.fillStyle='#ff8800';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('CLICK TO CALL AIRSTRIKE',mx,my-34);
   }
   drawNotifs();
 }
@@ -1298,7 +1375,7 @@ function startGame(mapIdx){
   globalLevel=1;score=0;currency=0;
   sessionCoins=0;sessionKills=0;
   waveActive=false;levelComplete=false;levelStartTimer=2.5;levelTimer=0;
-  bullets=[];particles=[];pickups=[];enemies=[];grenadeObjects=[];firePatches=[];notifs=[];deployables=[];
+  bullets=[];particles=[];pickups=[];enemies=[];grenadeObjects=[];firePatches=[];notifs=[];deployables=[];airBombs=[];airstrikePending=false;flashUntil=0;
   lightsOn=false;buyStationOpen=false;inventoryOpen=false;bigMapOpen=false;workshopOpen=false;
   inventoryAnim=0;inventorySelected=0;workshopSelectedWeapon='pistol';
   resetUpgrades();
@@ -1528,6 +1605,7 @@ function handleClick(e){
   if(workshopOpen){handleWorkshopClick(mx,my);return;}
   if(buyStationOpen){handleBuyClick(mx,my);return;}
   if(bigMapOpen){bigMapOpen=false;return;}
+  if(state===STATE.PLAYING&&airstrikePending){const camX=player.x-W/2,camY=player.y-H/2;callAirstrike(mx+camX,my+camY);airstrikePending=false;return;}
   if(state===STATE.MENU){for(const reg of menuRegions){if(mx>reg.x&&mx<reg.x+reg.w&&my>reg.y&&my<reg.y+reg.h){reg.action();break;}}}
   else if(state===STATE.GAME_OVER){const by=H/2+80;if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44)restartGame();if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44){state=STATE.MENU;menuTab='main';}}
   else if(state===STATE.WIN){const by=H/2+80;if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44)restartGame();if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44){state=STATE.MENU;menuTab='main';}}
@@ -1543,7 +1621,7 @@ function loop(now){
   else if(state===STATE.PLAYING||state===STATE.PAUSED){
     if(state===STATE.PLAYING){
       updatePlayer(dt);updateBullets(dt);updateParticles(dt);updatePickups(dt);
-      updateGrenades(dt);updateDeployables(dt);updateBarricades(dt);updateInventoryAnim(dt);updateNotifs(dt);
+      updateGrenades(dt);updateDeployables(dt);updateAirBombs(dt);updateBarricades(dt);updateInventoryAnim(dt);updateNotifs(dt);
       if(waveActive){
         updateEnemies(dt);
         if(enemies.length===0){waveActive=false;levelComplete=true;levelTimer=isBossLevel()?9.0:4.0;spawnPickup('health',player.x+rand(-120,120),player.y+rand(-120,120));if(isBossLevel())addNotif('Grab the boss loot before the next level!','#ffcc44',5);}
@@ -1554,11 +1632,12 @@ function loop(now){
     const camX=Math.round(player.x-W/2),camY=Math.round(player.y-H/2);
     ctx.fillStyle=mapCfg.bg;ctx.fillRect(0,0,W,H);
     drawWorld(camX,camY);drawDebris(camX,camY);drawMapObjects(camX,camY);
-    drawDeployables(camX,camY);drawPickups(camX,camY);drawParticles(camX,camY);
+    drawDeployables(camX,camY);drawAirBombs(camX,camY);drawPickups(camX,camY);drawParticles(camX,camY);
     drawGrenades(camX,camY);drawBullets(camX,camY);
     enemies.forEach(e=>drawEnemy(e,camX,camY));
     drawPlayer(camX,camY);drawFlashlight(camX,camY);
     drawObjectiveArrow(camX,camY);
+    drawScreenFlash();
     drawHUD();drawInventory();drawBuyStation();drawWorkshop();drawBigMap();
     if(state===STATE.PAUSED)drawPaused();
   }
