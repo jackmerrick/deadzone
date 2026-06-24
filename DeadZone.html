@@ -25,7 +25,7 @@ const fogCtx=fogCanvas.getContext('2d');
 function resizeCanvas(){W=window.innerWidth;H=window.innerHeight;canvas.width=W;canvas.height=H;fogCanvas.width=W;fogCanvas.height=H;}
 window.addEventListener('resize',resizeCanvas);
 
-const STATE={MENU:'menu',PLAYING:'playing',GAME_OVER:'gameOver',WIN:'win',PAUSED:'paused'};
+const STATE={MENU:'menu',PLAYING:'playing',GAME_OVER:'gameOver',WIN:'win',PAUSED:'paused',BRIEFING:'briefing'};
 const MAPS=[
   {id:'city',      name:'City Streets',      bg:'#111',    floorA:'#1e1e1e',floorB:'#222',    wallA:'#3d3d3d',wallB:'#454545',accentColor:'#e63946',fog:'rgba(0,0,0,0.87)'},
   {id:'bunker',    name:'Underground Bunker', bg:'#070d12', floorA:'#0d1a26',floorB:'#101e2c', wallA:'#1e3040',wallB:'#243850',accentColor:'#00b4d8',fog:'rgba(0,5,15,0.9)'},
@@ -35,10 +35,26 @@ const MAPS=[
 ];
 // Campaign chains MAPS[0..3]; the arctic map (index 4) is single-map only.
 
+// ── Stealth Campaign: hand-authored infiltration missions ───────────────────
+// Each mission reuses a MAPS theme as an enemy base; guards/cameras/objective/
+// extraction are placed procedurally on clear tiles (see setupStealth).
+const CAMPAIGN=[
+  {title:'CHAPTER 1 — INFILTRATION', missions:[
+    {id:'c1m1', name:'The Documents', mapIdx:0, target:'plans',   guards:9,  patrols:3, cameras:2,
+     intro:'Steal the classified plans and slip out unseen.'},
+    {id:'c1m2', name:'Hostage',       mapIdx:1, target:'hostage', guards:12, patrols:5, cameras:3,
+     intro:'Free the hostage and escort them to extraction.'},
+    {id:'c1m3', name:'Deep Cover',    mapIdx:2, target:'plans',   guards:16, patrols:6, cameras:4,
+     intro:'Heavily guarded. Grab the intel. Get out alive.'},
+  ]},
+];
+
 let state=STATE.MENU;
 let globalLevel=1;
 let campaignMode=true;   // true = chain MAPS[0..3]; false = stay on one map for 20 levels
 let fixedMapIdx=0;       // map used in single-map mode
+let gameMode='zombies';  // 'zombies' = wave survival, 'campaign' = stealth extraction
+let mission=null;        // active stealth mission def (campaign mode)
 let score=0,currency=0;
 let highScore=parseInt(localStorage.getItem('dz_hs')||'0');
 
@@ -57,7 +73,8 @@ function nextRank(kills){for(const x of RANKS)if(kills<x.kills)return x;return n
 
 const SAVE_DEFAULT={
   coins:0, kills:0, deaths:0, highestLevel:1, gamesPlayed:0, bestScore:0,
-  ownedHats:['none'], ownedOutfits:['default'], equippedHat:'none', equippedOutfit:'default'
+  ownedHats:['none'], ownedOutfits:['default'], equippedHat:'none', equippedOutfit:'default',
+  campaignDone:[]   // ids of completed stealth missions
 };
 let saveData=loadSave();
 function loadSave(){
@@ -195,9 +212,10 @@ document.addEventListener('keydown',e=>{
     return;
   }
   keys[e.key]=true;
+  const camp=(gameMode==='campaign');
 
-  if(e.key==='Tab'){e.preventDefault();if(state===STATE.PLAYING){inventoryOpen=!inventoryOpen;if(inventoryOpen){inventorySelected=Math.max(0,ALL_WEAPONS.indexOf(player.weapon));bigMapOpen=false;buyStationOpen=false;workshopOpen=false;}}return;}
-  if(e.key==='m'||e.key==='M'){if(state===STATE.PLAYING||state===STATE.PAUSED){bigMapOpen=!bigMapOpen;if(bigMapOpen){inventoryOpen=false;buyStationOpen=false;workshopOpen=false;}}return;}
+  if(e.key==='Tab'){e.preventDefault();if(!camp&&state===STATE.PLAYING){inventoryOpen=!inventoryOpen;if(inventoryOpen){inventorySelected=Math.max(0,ALL_WEAPONS.indexOf(player.weapon));bigMapOpen=false;buyStationOpen=false;workshopOpen=false;}}return;}
+  if(e.key==='m'||e.key==='M'){if(!camp&&(state===STATE.PLAYING||state===STATE.PAUSED)){bigMapOpen=!bigMapOpen;if(bigMapOpen){inventoryOpen=false;buyStationOpen=false;workshopOpen=false;}}return;}
   if(e.key==='Escape'){
     if(bigMapOpen){bigMapOpen=false;return;}
     if(inventoryOpen){inventoryOpen=false;return;}
@@ -225,6 +243,9 @@ document.addEventListener('keydown',e=>{
     const n=parseInt(e.key);if(n>=1&&n<=4)buyUpgrade(UPGRADE_DEFS[n-1]);
     return;
   }
+
+  // Campaign mode ignores the zombie-only action keys (grenades, build, killstreaks, shop).
+  if(camp){if(state===STATE.PLAYING&&(e.key==='y'||e.key==='Y'))cycleWeapon();return;}
 
   if(state===STATE.PLAYING){
     if(e.key==='g'||e.key==='G')throwGrenade();
@@ -528,6 +549,8 @@ function shoot(){
   for(let i=0;i<w.pellets;i++){const a=player.angle+rand(-w.spread,w.spread);bullets.push({x:player.x,y:player.y,vx:Math.cos(a)*w.spd,vy:Math.sin(a)*w.spd,dmg:w.dmg,life:w.life||1.6,color:w.color,fromPlayer:true,explosive:w.explosive,blast:w.blast,br:w.br});}
   spawnMuzzle(player.x+Math.cos(player.angle)*22,player.y+Math.sin(player.angle)*22,player.angle);
   addShake(3.5,0.1);
+  // Campaign stealth: the silenced pistol stays quiet; any other gun makes noise (escalating alert).
+  if(gameMode==='campaign'&&player.weapon!=='pistol')raiseNoise(player.x,player.y);
 }
 function meleeAttack(w){
   const range=w.range||50,arc=w.arc||0.8;let hit=false;
@@ -762,6 +785,14 @@ function drawBuiltWalls(camX,camY){
 // ── Interact ───────────────────────────────────────────────────────────────
 function handleInteract(){
   if(player.lastStand)return;
+  // Campaign: Enter performs a silent takedown when positioned behind a guard.
+  if(gameMode==='campaign'){
+    if(takedownTarget&&takedownTarget.alive){
+      takedownTarget.alive=false;spawnBlood(takedownTarget.x,takedownTarget.y,16);
+      addNotif('Silent takedown','#9aa0a6',1.5);addShake(3,0.1);takedownTarget=null;
+    }
+    return;
+  }
   if(lightsSwitch&&!lightsOn&&dist(player,lightsSwitch)<60){activateLights();return;}
   if(workshopPos&&dist(player,workshopPos)<70){workshopOpen=true;if(!player.weapons.includes(workshopSelectedWeapon))workshopSelectedWeapon=player.weapon;inventoryOpen=false;bigMapOpen=false;buyStationOpen=false;return;}
   if(buyStationPos&&dist(player,buyStationPos)<70){buyStationOpen=true;inventoryOpen=false;bigMapOpen=false;workshopOpen=false;return;}
@@ -1494,6 +1525,7 @@ function drawInventory(){
 
 // ── Game flow ───────────────────────────────────────────────────────────────
 function startGame(mapIdx){
+  gameMode='zombies';mission=null;
   campaignMode=(mapIdx===undefined||mapIdx===null);
   fixedMapIdx=campaignMode?0:Math.max(0,Math.min(mapIdx,MAPS.length-1));
   globalLevel=1;score=0;currency=0;
@@ -1511,7 +1543,7 @@ function startGame(mapIdx){
   addNotif(`DEAD ZONE — Level 1/20${campaignMode?'':' · '+MAPS[fixedMapIdx].name}`,'#e63946',3);
   addNotif('Buy weapons from 🧺 shop  ·  Upgrade at 🔧 workshop','#2ecc71',5);
 }
-function restartGame(){startGame(campaignMode?null:fixedMapIdx);}
+function restartGame(){if(gameMode==='campaign'&&mission){startMission(mission.id);return;}startGame(campaignMode?null:fixedMapIdx);}
 
 // Fold the current run's earnings/stats into the persistent save
 function commitRun(died){
@@ -1564,8 +1596,479 @@ function advanceLevel(){
   else addNotif(`Level ${globalLevel}/20 — defeat all enemies`,'#e63946',3);
 }
 
+// ── Stealth Campaign mode ───────────────────────────────────────────────────
+// Guards/cameras live in their own lists so the zombie survival code is untouched.
+let guards=[],cameras=[],objectiveItem=null,extractionZone=null,hostage=null;
+let hasObjective=false,alarm=false,alarmCalmTimer=0,seenNow=false,takedownTarget=null;
+let stealthScene='exterior',doorIn=null,doorOut=null,buildingRect=null,extSnapshot=null,doorCd=0;
+let coverTiles=new Set();           // tiles that are decorative cover (trees/crates/furniture), not structural walls
+let noiseEscalateT=0;               // >0 = a guard is investigating a shot; hits 0 → whole base alerts
+const ALARM_CALM_TIME=8;            // seconds out of sight before the base calms down
+const VIEW_RANGE=420,VIEW_HALF=0.46;// guard vision cone (range px, half-angle rad ≈ 26°)
+const CAM_RANGE=340,CAM_HALF=0.42;  // camera/searchlight cone
+// Interior building theme (exteriors reuse the per-mission MAPS theme for variety)
+const INT_CFG={id:'bunker',bg:'#0b0d12',floorA:'#15171f',floorB:'#181b24',wallA:'#343a4a',wallB:'#3d4456',accentColor:'#ffd24a',fog:'rgba(4,6,12,0)'};
+
+function findMission(id){for(const ch of CAMPAIGN)for(const m of ch.missions)if(m.id===id)return m;return null;}
+function nextMission(id){const all=CAMPAIGN.flatMap(c=>c.missions);const i=all.findIndex(m=>m.id===id);return i>=0&&i<all.length-1?all[i+1]:null;}
+function missionUnlocked(chMissions,i){return i===0||saveData.campaignDone.includes(chMissions[i-1].id);}
+
+// Smallest signed angle between two headings
+function angDiff(a,b){let d=(a-b)%(Math.PI*2);if(d>Math.PI)d-=Math.PI*2;if(d<-Math.PI)d+=Math.PI*2;return d;}
+// Line-of-sight: sample the segment for walls
+function losClear(x0,y0,x1,y1){const steps=Math.ceil(Math.hypot(x1-x0,y1-y0)/16);for(let i=1;i<steps;i++){const t=i/steps;if(isWall(x0+(x1-x0)*t,y0+(y1-y0)*t))return false;}return true;}
+// Does a cone at (x,y) facing ang see the player?
+function coneSees(x,y,ang,range,half){const dx=player.x-x,dy=player.y-y,d=Math.hypot(dx,dy);if(d>range)return false;if(Math.abs(angDiff(Math.atan2(dy,dx),ang))>half)return false;return losClear(x,y,player.x,player.y);}
+
+// ── Map geometry helpers ────────────────────────────────────────────────────
+function blankMap(){return Array.from({length:MAP_H},(_,y)=>Array.from({length:MAP_W},(_,x)=>(x===0||y===0||x===MAP_W-1||y===MAP_H-1)?1:0));}
+function tcx(t){return t*TILE+TILE/2;}                    // tile index → world centre
+function inRect(tx,ty,r,pad=0){return !!r&&tx>=r.x-pad&&tx<r.x+r.w+pad&&ty>=r.y-pad&&ty<r.y+r.h+pad;}
+// Flood-fill: every floor tile reachable from a start tile (4-way)
+function reachable(stx,sty){
+  if(stx<1||sty<1||stx>=MAP_W-1||sty>=MAP_H-1||worldMap[sty][stx]===1)return[];
+  const seen=Array.from({length:MAP_H},()=>Array(MAP_W).fill(false)),q=[[stx,sty]],out=[];
+  seen[sty][stx]=true;
+  while(q.length){const [x,y]=q.pop();out.push([x,y]);
+    for(const[dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){const nx=x+dx,ny=y+dy;
+      if(nx<1||ny<1||nx>=MAP_W-1||ny>=MAP_H-1||seen[ny][nx]||worldMap[ny][nx]===1)continue;
+      seen[ny][nx]=true;q.push([nx,ny]);}}
+  return out;
+}
+
+// ── Map layouts ─────────────────────────────────────────────────────────────
+// Exterior: a walled compound with a solid target building (single door) + yard cover.
+function layoutExterior(){
+  worldMap=blankMap();
+  const bw=randInt(9,11),bh=randInt(8,10),bx=randInt(4,MAP_W-bw-4),by=randInt(3,5);
+  buildingRect={x:bx,y:by,w:bw,h:bh};coverTiles=new Set();
+  for(let y=by;y<by+bh;y++)for(let x=bx;x<bx+bw;x++)worldMap[y][x]=1; // solid house facade
+  const dgx=bx+Math.floor(bw/2);
+  worldMap[by+bh-1][dgx]=0;                                          // carve a visible doorway
+  doorIn={x:tcx(dgx),y:tcx(by+bh),tx:dgx,ty:by+bh,kind:'enter'};doorOut=null;
+  // Player inserts (and extracts) from a corner of the compound
+  const corners=[[3,3],[MAP_W-4,3],[3,MAP_H-4],[MAP_W-4,MAP_H-4]];
+  const valid=corners.filter(([x,y])=>!inRect(x,y,buildingRect,2));
+  const corner=valid.length?valid[randInt(0,valid.length-1)]:[Math.floor(MAP_W/2),MAP_H-3];
+  const insTx=corner[0],insTy=corner[1];
+  for(let i=0;i<18;i++){const x=randInt(2,MAP_W-3),y=randInt(2,MAP_H-3);
+    if(inRect(x,y,buildingRect,1)||Math.abs(x-dgx)<2||(Math.abs(x-insTx)<3&&Math.abs(y-insTy)<3))continue;
+    if(Math.random()<0.4){worldMap[y][x]=1;coverTiles.add(y*MAP_W+x);}}
+  // Guarantee the door is reachable from the corner; else strip the yard cover.
+  if(!reachable(insTx,insTy).some(([x,y])=>x===dgx&&y===by+bh)){
+    worldMap=blankMap();coverTiles=new Set();for(let y=by;y<by+bh;y++)for(let x=bx;x<bx+bw;x++)worldMap[y][x]=1;worldMap[by+bh-1][dgx]=0;}
+  extractionZone={x:tcx(insTx),y:tcx(insTy)};
+  return {x:tcx(insTx),y:tcx(insTy)};
+}
+// Interior: a grid of rooms joined by doorways; objective in the farthest reachable room.
+function layoutInterior(){
+  worldMap=blankMap();coverTiles=new Set();
+  const vl=[Math.floor(MAP_W/3),Math.floor(2*MAP_W/3)],hl=[Math.floor(MAP_H/3),Math.floor(2*MAP_H/3)];
+  vl.forEach(cx=>{for(let y=1;y<MAP_H-1;y++)worldMap[y][cx]=1;});
+  hl.forEach(cy=>{for(let x=1;x<MAP_W-1;x++)worldMap[cy][x]=1;});
+  const cV=(cx,y)=>{worldMap[y][cx]=0;if(y+1<MAP_H-1)worldMap[y+1][cx]=0;};
+  const cH=(cy,x)=>{worldMap[cy][x]=0;if(x+1<MAP_W-1)worldMap[cy][x+1]=0;};
+  vl.forEach(cx=>{[randInt(2,hl[0]-1),randInt(hl[0]+1,hl[1]-1),randInt(hl[1]+1,MAP_H-3)].forEach(y=>cV(cx,y));});
+  hl.forEach(cy=>{[randInt(2,vl[0]-1),randInt(vl[0]+1,vl[1]-1),randInt(vl[1]+1,MAP_W-3)].forEach(x=>cH(cy,x));});
+  const exTx=Math.floor(MAP_W/2),exTy=MAP_H-2;worldMap[exTy][exTx]=0;worldMap[exTy-1][exTx]=0;
+  doorOut={x:tcx(exTx),y:tcx(exTy),tx:exTx,ty:exTy,kind:'exit'};doorIn=null;
+  const insTx=exTx,insTy=MAP_H-4;
+  let reach=reachable(insTx,insTy);
+  for(let i=0;i<8;i++){const c=reach[randInt(0,reach.length-1)];if(c[0]===insTx&&c[1]>=insTy-1)continue;if(Math.random()<0.5){worldMap[c[1]][c[0]]=1;coverTiles.add(c[1]*MAP_W+c[0]);}}
+  reach=reachable(insTx,insTy);
+  let far=[insTx,insTy],fd=-1;reach.forEach(([x,y])=>{const d=Math.hypot(x-insTx,y-insTy);if(d>fd){fd=d;far=[x,y];}});
+  objectiveItem={x:tcx(far[0]),y:tcx(far[1])};
+  if(mission.target==='hostage')hostage={x:objectiveItem.x,y:objectiveItem.y};
+  return {x:tcx(insTx),y:tcx(insTy),reach};
+}
+
+// ── Entity placement (on reachable tiles only) ──────────────────────────────
+function makePatrolReach(reach,tx,ty){
+  const pts=[{x:tcx(tx),y:tcx(ty)}];let cx=tx,cy=ty;
+  for(let k=0;k<3;k++){let nxt=null;
+    for(let t=0;t<30;t++){const c=reach[randInt(0,reach.length-1)],dd=Math.hypot(c[0]-cx,c[1]-cy);
+      if(dd>2&&dd<7&&losClear(tcx(cx),tcx(cy),tcx(c[0]),tcx(c[1]))){nxt=c;break;}}
+    if(nxt){pts.push({x:tcx(nxt[0]),y:tcx(nxt[1])});cx=nxt[0];cy=nxt[1];}}
+  return pts.length>1?pts:[{x:tcx(tx),y:tcx(ty)},{x:tcx(tx)+60,y:tcx(ty)}];
+}
+function placeGuards(count,patrols,reach,ax,ay,minD){
+  const pool=reach.filter(([x,y])=>Math.hypot(tcx(x)-ax,tcx(y)-ay)>minD),src=pool.length>count?pool:reach,list=[];
+  for(let i=0;i<count;i++){const c=src[randInt(0,src.length-1)],patrol=i<patrols;
+    const g={x:tcx(c[0]),y:tcx(c[1]),angle:rand(0,Math.PI*2),base:rand(0,Math.PI*2),scanT:rand(0,Math.PI*2),
+             alive:true,fireCd:rand(0,1),state:patrol?'patrol':'post',wps:[],wpIdx:0,pauseT:rand(0,1.2),stuckT:0};
+    if(patrol)g.wps=makePatrolReach(reach,c[0],c[1]);
+    list.push(g);}
+  return list;
+}
+function placeCameras(count,reach,ax,ay){
+  const pool=reach.filter(([x,y])=>Math.hypot(tcx(x)-ax,tcx(y)-ay)>180),src=pool.length>count?pool:reach,list=[];
+  for(let i=0;i<count;i++){const c=src[randInt(0,src.length-1)];list.push({x:tcx(c[0]),y:tcx(c[1]),base:rand(0,Math.PI*2),angle:0,sweep:0.9,spd:0.45,destroyed:false});}
+  return list;
+}
+
+// ── Scene building & exterior↔interior transitions ──────────────────────────
+function buildExterior(m){
+  mapCfg=MAPS[m.mapIdx];
+  const ins=layoutExterior();generateDebris();
+  const reach=reachable(Math.floor(ins.x/TILE),Math.floor(ins.y/TILE));
+  guards=placeGuards(m.guards,m.patrols,reach,ins.x,ins.y,260);
+  cameras=placeCameras(m.cameras,reach,ins.x,ins.y);
+  return ins;
+}
+function buildInterior(m){
+  mapCfg=INT_CFG;
+  const r=layoutInterior();generateDebris();
+  const ig=Math.max(3,Math.round(m.guards*0.7)),ip=Math.max(1,Math.round(m.patrols*0.6));
+  guards=placeGuards(ig,ip,r.reach,r.x,r.y,200);
+  cameras=placeCameras(Math.max(1,m.cameras-1),r.reach,r.x,r.y);
+  return r;
+}
+function snapshotScene(){return {worldMap,mapCfg,debris,guards,cameras,doorIn,doorOut,buildingRect,extractionZone,alarm,alarmCalmTimer,coverTiles};}
+function applyScene(s){worldMap=s.worldMap;mapCfg=s.mapCfg;debris=s.debris;guards=s.guards;cameras=s.cameras;doorIn=s.doorIn;doorOut=s.doorOut;buildingRect=s.buildingRect;extractionZone=s.extractionZone;alarm=s.alarm;alarmCalmTimer=s.alarmCalmTimer;coverTiles=s.coverTiles;}
+function enterInterior(){
+  extSnapshot=snapshotScene();
+  stealthScene='interior';alarm=false;alarmCalmTimer=0;noiseEscalateT=0;doorCd=0.6;
+  const r=buildInterior(mission);player.x=r.x;player.y=r.y;bullets=[];
+  addNotif('Inside the building — find the '+(mission.target==='hostage'?'hostage':'intel'),'#ffd24a',4);
+}
+function exitToExterior(){
+  applyScene(extSnapshot);stealthScene='exterior';noiseEscalateT=0;doorCd=0.6;
+  player.x=doorIn.x;player.y=doorIn.y+TILE;bullets=[];
+  if(hasObjective&&mission.target==='hostage'&&hostage){hostage.x=player.x;hostage.y=player.y+30;}
+  addNotif(hasObjective?'Back outside — reach the extraction point':'Back in the yard','#2ecc71',4);
+}
+
+function triggerAlarm(){alarmCalmTimer=ALARM_CALM_TIME;if(!alarm){alarm=true;noiseEscalateT=0;guards.forEach(g=>g.investigate=false);addNotif('⚠ DETECTED — the base is on alert!','#ff4444',3);addShake(8,0.3);}}
+// A loud (missed) shot: the nearest guard investigates; if unresolved, the base fully alerts after 5s.
+function raiseNoise(x,y){
+  if(alarm)return;
+  let best=null,bd=1e9;
+  for(const g of guards){if(!g.alive)continue;const d=Math.hypot(g.x-x,g.y-y);if(d<bd){bd=d;best=g;}}
+  if(best){best.investigate=true;best.invX=x;best.invY=y;}
+  if(noiseEscalateT<=0){noiseEscalateT=5;addNotif('🔊 Gunshot heard — a guard is investigating! Base alerts in 5s','#ffaa33',3);}
+}
+
+// Wall-aware movement: try the full step, then slide along whichever axis is clear.
+function moveToward(g,tx,ty,spd,dt){const dx=tx-g.x,dy=ty-g.y,d=Math.hypot(dx,dy)||1,mx=dx/d,my=dy/d,s=spd*dt;
+  if(!isWall(g.x+mx*s,g.y+my*s)){g.x+=mx*s;g.y+=my*s;return true;}
+  if(!isWall(g.x+mx*s,g.y)){g.x+=mx*s;return true;}
+  if(!isWall(g.x,g.y+my*s)){g.y+=my*s;return true;}
+  return false;}
+// Patrol: walk to waypoint, pause & scan on arrival, skip the waypoint if wedged.
+function patrolGuard(g,dt){
+  if(g.pauseT>0){g.pauseT-=dt;g.angle=g.base+Math.sin(performance.now()/700+g.scanT)*0.9;return;}
+  const wp=g.wps[g.wpIdx];
+  if(Math.hypot(wp.x-g.x,wp.y-g.y)<16){g.wpIdx=(g.wpIdx+1)%g.wps.length;g.pauseT=rand(0.5,1.6);g.base=g.angle;return;}
+  g.angle=Math.atan2(wp.y-g.y,wp.x-g.x);
+  if(!moveToward(g,wp.x,wp.y,62,dt)){g.stuckT+=dt;if(g.stuckT>0.7){g.wpIdx=(g.wpIdx+1)%g.wps.length;g.stuckT=0;}}else g.stuckT=0;
+}
+
+function updateStealth(dt){
+  const t=performance.now()/1000;
+  if(doorCd>0)doorCd-=dt;
+  seenNow=false;
+  // Cameras sweep their cones (destroyed ones are blind)
+  cameras.forEach(c=>{if(c.destroyed)return;c.angle=c.base+Math.sin(t*c.spd*(alarm?2:1))*c.sweep;if(coneSees(c.x,c.y,c.angle,CAM_RANGE,CAM_HALF)){seenNow=true;triggerAlarm();}});
+  // Guards
+  guards.forEach(g=>{
+    if(!g.alive)return;
+    if(alarm){
+      // Combat: hunt and fire (reuses the gunner bullet pattern)
+      moveToward(g,player.x,player.y,98,dt);
+      g.angle=Math.atan2(player.y-g.y,player.x-g.x);
+      const d=dist(g,player);g.fireCd-=dt;
+      if(d<560&&d>40&&g.fireCd<=0&&losClear(g.x,g.y,player.x,player.y)){
+        const a=g.angle+rand(-0.06,0.06);
+        bullets.push({x:g.x,y:g.y,vx:Math.cos(a)*430,vy:Math.sin(a)*430,dmg:11,life:1.7,color:'#ffdd66',fromPlayer:false,br:4});
+        spawnMuzzle(g.x+Math.cos(a)*16,g.y+Math.sin(a)*16,a);g.fireCd=rand(0.7,1.3);
+      }
+      if(d<player.radius+18&&player.invincible<=0){takeDamage(8);player.invincible=0.5;addShake(6,0.2);}
+      if(coneSees(g.x,g.y,g.angle,VIEW_RANGE+80,1.1))seenNow=true;
+    } else {
+      if(g.investigate){
+        const dn=Math.hypot(g.invX-g.x,g.invY-g.y);
+        if(dn>28){g.angle=Math.atan2(g.invY-g.y,g.invX-g.x);moveToward(g,g.invX,g.invY,82,dt);}
+        else g.angle+=dt*2.2;                            // reached the noise — scan around
+      } else if(g.state==='patrol')patrolGuard(g,dt);
+      else g.angle=g.base+Math.sin(t*0.7+g.scanT)*1.2;   // post: slow scan
+      if(coneSees(g.x,g.y,g.angle,VIEW_RANGE,VIEW_HALF)){seenNow=true;triggerAlarm();}
+    }
+  });
+  // Loud-shot escalation: one guard investigates, then the whole base goes loud after 5s
+  if(!alarm&&noiseEscalateT>0){noiseEscalateT-=dt;if(noiseEscalateT<=0)triggerAlarm();}
+  // Alarm de-escalation: calm down after staying out of sight
+  if(seenNow)alarmCalmTimer=ALARM_CALM_TIME;
+  else if(alarm){alarmCalmTimer-=dt;if(alarmCalmTimer<=0){alarm=false;noiseEscalateT=0;guards.forEach(g=>{g.fireCd=rand(0,1);g.stuckT=0;g.investigate=false;});addNotif('Alarm cleared — you slipped away','#7bc67e',3);}}
+  // Takedown eligibility: close behind a living guard
+  takedownTarget=null;
+  for(const g of guards){if(!g.alive)continue;if(dist(g,player)<46){const gp=Math.atan2(player.y-g.y,player.x-g.x);if(Math.abs(angDiff(g.angle,gp))>1.7){takedownTarget=g;break;}}}
+  // Player bullets: one-shot guards, and destroy cameras (silenced = quiet, handled in shoot())
+  for(let i=bullets.length-1;i>=0;i--){const b=bullets[i];if(!b.fromPlayer)continue;let hit=false;
+    for(const g of guards){if(!g.alive)continue;if(Math.hypot(b.x-g.x,b.y-g.y)<15+(b.br||4)){g.alive=false;spawnBlood(g.x,g.y,16);hit=true;break;}}
+    if(!hit)for(const c of cameras){if(c.destroyed)continue;if(Math.hypot(b.x-c.x,b.y-c.y)<16+(b.br||4)){c.destroyed=true;spawnExplosion(c.x,c.y,10);addShake(3,0.1);addNotif('📷 Camera destroyed','#9aa0a6',1.5);hit=true;break;}}
+    if(hit)bullets.splice(i,1);}
+  // Building entry / exit
+  if(doorCd<=0){
+    if(stealthScene==='exterior'&&doorIn&&dist(player,doorIn)<34){enterInterior();return;}
+    if(stealthScene==='interior'&&doorOut&&dist(player,doorOut)<34){exitToExterior();return;}
+  }
+  // Objective pickup (lives inside the building)
+  if(!hasObjective&&stealthScene==='interior'&&objectiveItem&&dist(player,objectiveItem)<34){hasObjective=true;addNotif(mission.target==='hostage'?'🧍 Hostage freed — escort them out!':'📁 Intel secured — get out!','#ffd700',4);}
+  // Hostage follows once freed
+  if(hasObjective&&mission.target==='hostage'&&hostage){const dx=player.x-hostage.x,dy=player.y-hostage.y,d=Math.hypot(dx,dy);if(d>58){const mx=dx/d,my=dy/d,s=175*dt;if(!isWall(hostage.x+mx*s,hostage.y))hostage.x+=mx*s;if(!isWall(hostage.x,hostage.y+my*s))hostage.y+=my*s;}}
+  // Extraction outside, with the objective = mission complete
+  if(hasObjective&&stealthScene==='exterior'&&extractionZone&&dist(player,extractionZone)<44)missionComplete();
+}
+
+function missionComplete(){
+  if(mission&&!saveData.campaignDone.includes(mission.id)){saveData.campaignDone.push(mission.id);writeSave();}
+  commitRun(false);
+  state=STATE.WIN; // drawn as mission-complete because gameMode==='campaign'
+}
+
+function startMission(id){
+  const m=findMission(id);if(!m)return;
+  mission=m;gameMode='campaign';
+  globalLevel=1;score=0;currency=0;sessionCoins=0;sessionKills=0;
+  waveActive=false;levelComplete=false;levelStartTimer=0;levelTimer=0;
+  bullets=[];particles=[];pickups=[];enemies=[];grenadeObjects=[];firePatches=[];notifs=[];deployables=[];airBombs=[];airstrikePending=false;flashUntil=0;builtWalls=[];buildMode=false;
+  buyStationOpen=false;inventoryOpen=false;bigMapOpen=false;workshopOpen=false;
+  resetUpgrades();
+  // Reset stealth state
+  hasObjective=false;alarm=false;alarmCalmTimer=0;seenNow=false;takedownTarget=null;hostage=null;objectiveItem=null;extSnapshot=null;stealthScene='exterior';doorCd=0;noiseEscalateT=0;
+  // Base has power: full vision, no flashlight battery / no zombie map objects.
+  lightsOn=true;lightsSwitch=null;buyStationPos=null;workshopPos=null;perkMachines=[];barricades=[];
+  // Build the compound FIRST so the map exists before the player safe-spawns on it.
+  const ins=buildExterior(m);
+  initPlayer();
+  // Stealth loadout: silenced pistol (quiet) + a rifle as a loud panic option.
+  player.weapons=['knife','pistol','rifle'];player.weapon='pistol';player.ammo.rifle=120;
+  player.x=ins.x;player.y=ins.y;
+  // Show the mission briefing (tactical preview + countdown) before play begins.
+  briefT=0;briefPhase='video';countdownT=5;briefRegion=null;
+  state=STATE.BRIEFING;
+}
+function beginMissionPlay(){
+  state=STATE.PLAYING;gameStartTime=performance.now()/1000;
+  addNotif('MISSION: '+mission.name,'#7fd4ff',3);
+  addNotif(mission.intro,'#cfe6ff',5);
+  addNotif('Enter the house · pistol silenced · [Enter] behind a guard = takedown','#9aa0a6',6);
+}
+
+// ── Stealth drawing ─────────────────────────────────────────────────────────
+function drawCone(sx,sy,ang,range,half,color,alpha){ctx.save();ctx.globalAlpha=alpha;ctx.fillStyle=color;ctx.beginPath();ctx.moveTo(sx,sy);ctx.arc(sx,sy,range,ang-half,ang+half);ctx.closePath();ctx.fill();ctx.restore();}
+
+function drawStealth(camX,camY){
+  const t=performance.now()/1000;
+  // Target building tint + label (exterior only)
+  if(stealthScene==='exterior'&&buildingRect){const sx=buildingRect.x*TILE-camX,sy=buildingRect.y*TILE-camY,bw=buildingRect.w*TILE,bh=buildingRect.h*TILE;
+    ctx.fillStyle='rgba(60,70,90,0.22)';ctx.fillRect(sx,sy,bw,bh);
+    ctx.strokeStyle='rgba(130,150,180,0.45)';ctx.lineWidth=2;ctx.strokeRect(sx,sy,bw,bh);
+    ctx.fillStyle='rgba(170,190,210,0.85)';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('TARGET BUILDING',sx+bw/2,sy+bh/2);}
+  // Doors
+  const drawDoor=(d,label,color)=>{const sx=d.x-camX,sy=d.y-camY,p=Math.sin(t*4)*0.3+0.7;
+    ctx.fillStyle=color+'2e';ctx.fillRect(sx-22,sy-22,44,44);ctx.globalAlpha=p;ctx.strokeStyle=color;ctx.lineWidth=2;ctx.strokeRect(sx-22,sy-22,44,44);ctx.globalAlpha=1;
+    ctx.fillStyle=color;ctx.font='bold 10px Courier New';ctx.textAlign='center';ctx.fillText(label,sx,sy-28);};
+  if(stealthScene==='exterior'&&doorIn)drawDoor(doorIn,'▲ ENTER','#7fd4ff');
+  if(stealthScene==='interior'&&doorOut)drawDoor(doorOut,hasObjective?'▼ EXIT':'▼ OUT','#2ecc71');
+  // Extraction marker (exterior only)
+  if(stealthScene==='exterior'&&extractionZone){const sx=extractionZone.x-camX,sy=extractionZone.y-camY,p=Math.sin(t*3)*0.3+0.7;
+    ctx.strokeStyle=hasObjective?`rgba(46,204,113,${p})`:'rgba(46,204,113,0.3)';ctx.lineWidth=3;ctx.strokeRect(sx-26,sy-26,52,52);
+    ctx.beginPath();ctx.moveTo(sx,sy-10);ctx.lineTo(sx,sy+10);ctx.moveTo(sx-10,sy);ctx.lineTo(sx+10,sy);ctx.stroke();
+    ctx.fillStyle=hasObjective?'#2ecc71':'#1f6e3a';ctx.font='bold 11px Courier New';ctx.textAlign='center';ctx.fillText('EXTRACT',sx,sy-34);}
+  // Objective (interior only)
+  if(!hasObjective&&stealthScene==='interior'&&objectiveItem){const sx=objectiveItem.x-camX,sy=objectiveItem.y-camY,p=Math.sin(t*4)*0.4+0.6;
+    ctx.shadowColor='#ffd700';ctx.shadowBlur=20*p;
+    if(mission.target==='hostage'){ctx.fillStyle='#ffcc88';ctx.beginPath();ctx.arc(sx,sy,12,0,Math.PI*2);ctx.fill();ctx.fillStyle='#221';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('!',sx,sy+4);}
+    else{ctx.fillStyle='#caa14a';ctx.fillRect(sx-11,sy-8,22,16);ctx.fillStyle='#3a2e10';ctx.fillRect(sx-3,sy-8,6,5);}
+    ctx.shadowBlur=0;ctx.fillStyle='#ffd700';ctx.font='bold 10px Courier New';ctx.textAlign='center';ctx.fillText(mission.target==='hostage'?'HOSTAGE':'INTEL',sx,sy-18);}
+  // Hostage escort token
+  if(hasObjective&&mission.target==='hostage'&&hostage){const sx=hostage.x-camX,sy=hostage.y-camY;ctx.fillStyle='rgba(0,0,0,0.35)';ctx.beginPath();ctx.ellipse(sx+2,sy+4,9,5,0,0,Math.PI*2);ctx.fill();ctx.fillStyle='#ffcc88';ctx.beginPath();ctx.arc(sx,sy,11,0,Math.PI*2);ctx.fill();}
+  // Cameras (destroyable)
+  cameras.forEach(c=>{const sx=c.x-camX,sy=c.y-camY;
+    if(!c.destroyed)drawCone(sx,sy,c.angle,CAM_RANGE,CAM_HALF,alarm?'#ff4444':'#3fa9ff',0.10);
+    ctx.fillStyle=c.destroyed?'#444':'#222';ctx.fillRect(sx-7,sy-7,14,14);
+    if(c.destroyed){ctx.strokeStyle='#777';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(sx-6,sy-6);ctx.lineTo(sx+6,sy+6);ctx.moveTo(sx+6,sy-6);ctx.lineTo(sx-6,sy+6);ctx.stroke();}
+    else{ctx.fillStyle=alarm?'#ff5555':'#3fa9ff';ctx.beginPath();ctx.arc(sx+Math.cos(c.angle)*7,sy+Math.sin(c.angle)*7,3,0,Math.PI*2);ctx.fill();}});
+  // Guards
+  guards.forEach(g=>{if(!g.alive)return;const sx=g.x-camX,sy=g.y-camY;
+    const cc=alarm?'#ff4444':(g.investigate?'#ffaa33':'#ffd24a');
+    drawCone(sx,sy,g.angle,alarm?VIEW_RANGE+80:VIEW_RANGE,alarm?1.1:VIEW_HALF,cc,0.09);
+    if(g.investigate&&!alarm){ctx.fillStyle='#ffaa33';ctx.font='bold 15px Courier New';ctx.textAlign='center';ctx.fillText('?',sx,sy-22);}
+    ctx.save();ctx.translate(sx,sy);ctx.rotate(g.angle);
+    ctx.fillStyle='rgba(0,0,0,0.35)';ctx.beginPath();ctx.ellipse(2,4,11,6,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle=alarm?'#7a2222':'#3a4a2a';ctx.beginPath();ctx.arc(0,0,12,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#222';ctx.fillRect(6,-3,16,6);
+    ctx.fillStyle='#ccb89a';ctx.beginPath();ctx.arc(3,0,5,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+    if(takedownTarget===g){ctx.fillStyle='#fff';ctx.font='bold 11px Courier New';ctx.textAlign='center';ctx.fillText('[Enter] Takedown',sx,sy-20);}});
+}
+
+function drawStealthHUD(){
+  // Alarm banner (top-centre)
+  const bw=300,bx=W/2-bw/2,investigating=!alarm&&noiseEscalateT>0;
+  ctx.fillStyle=alarm?'rgba(120,0,0,0.85)':investigating?'rgba(120,70,0,0.85)':'rgba(0,40,0,0.7)';ctx.fillRect(bx,14,bw,30);
+  ctx.strokeStyle=alarm?'#ff4444':investigating?'#ffaa33':'#2ecc71';ctx.lineWidth=2;ctx.strokeRect(bx,14,bw,30);
+  ctx.fillStyle=alarm?'#ff8585':investigating?'#ffcc77':'#7bf0a0';ctx.font='bold 14px Courier New';ctx.textAlign='center';
+  ctx.fillText(alarm?'⚠ ALARM — BASE ALERTED':investigating?'⚠ GUARD INVESTIGATING':'● UNDETECTED',W/2,34);
+  if(alarm){ctx.fillStyle='#ffbb99';ctx.font='9px Courier New';ctx.fillText(seenNow?'Get out of sight to lose them':`Hidden — ${Math.ceil(alarmCalmTimer)}s to clear`,W/2,57);}
+  else if(investigating){ctx.fillStyle='#ffd9a0';ctx.font='9px Courier New';ctx.fillText(`Whole base alerts in ${Math.ceil(noiseEscalateT)}s`,W/2,57);}
+  // Objective tracker (top-left) — context aware
+  let step1,done1;
+  if(!hasObjective&&stealthScene==='exterior'){step1='Enter the target building';done1=false;}
+  else if(!hasObjective){step1=mission.target==='hostage'?'Reach the hostage':'Steal the intel';done1=false;}
+  else {step1=mission.target==='hostage'?'Hostage secured':'Intel secured';done1=true;}
+  ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(14,14,256,58);ctx.strokeStyle='#234';ctx.lineWidth=1;ctx.strokeRect(14,14,256,58);
+  ctx.textAlign='left';ctx.fillStyle='#7fd4ff';ctx.font='bold 11px Courier New';ctx.fillText('MISSION: '+mission.name,22,32);
+  ctx.fillStyle=done1?'#2ecc71':'#ddd';ctx.font='10px Courier New';ctx.fillText((done1?'✓ ':'• ')+step1,22,48);
+  ctx.fillStyle=hasObjective?'#ffd700':'#666';ctx.fillText((hasObjective?'➤ ':'• ')+'Reach extraction',22,64);
+  // Guidance arrow toward the current goal
+  const goal=hasObjective?(stealthScene==='exterior'?extractionZone:doorOut):(stealthScene==='exterior'?doorIn:objectiveItem);
+  if(goal){const a=Math.atan2(goal.y-player.y,goal.x-player.x);ctx.save();ctx.translate(W/2,H-96);ctx.rotate(a);ctx.fillStyle='rgba(255,215,0,0.85)';ctx.beginPath();ctx.moveTo(28,0);ctx.lineTo(12,-8);ctx.lineTo(12,8);ctx.closePath();ctx.fill();ctx.restore();}
+  // Compact health + weapon readout (bottom-left)
+  const hpR=clamp(player.hp/player.maxHp,0,1);
+  ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(14,H-46,236,32);
+  ctx.fillStyle='#300';ctx.fillRect(18,H-42,206,12);
+  ctx.fillStyle=hpR>0.5?'#2ecc71':hpR>0.25?'#f39c12':'#e74c3c';ctx.fillRect(18,H-42,206*hpR,12);
+  ctx.strokeStyle='#444';ctx.lineWidth=1;ctx.strokeRect(18,H-42,206,12);
+  const wq=(player.weapon==='pistol'||player.weapon==='knife');
+  ctx.fillStyle='#fff';ctx.font='bold 9px Courier New';ctx.textAlign='center';
+  ctx.fillText(`HP ${Math.ceil(player.hp)}  ·  ${player.weapon.toUpperCase()} ${wq?'(quiet)':'(LOUD)'}`,121,H-33);
+}
+
+function drawMissionComplete(){
+  const nxt=nextMission(mission.id);
+  drawOverlay('MISSION COMPLETE','#2ecc71',
+    [{text:mission.name,col:'#fff',font:'bold 22px Courier New'},
+     {text:mission.target==='hostage'?'Hostage extracted':'Intel secured',col:'#888',font:'14px Courier New'},
+     {text:nxt?'Next mission unlocked':'Chapter cleared!',col:'#ffd700',font:'13px Courier New'}],
+    {label:nxt?'NEXT':'MENU',col:'#1a5a2a',hov:'#2ecc71',border:'#2ecc71'},
+    {label:'MENU',col:'#111',hov:'#333'});
+}
+
+// ── Campaign world rendering (house / outdoor look) ─────────────────────────
+function drawCover(sx,sy,tx,ty,ext){
+  const cx=sx+TILE/2,cy=sy+TILE/2,h=(tx*73+ty*131)%3;
+  if(ext){
+    if(h===0){ // bush
+      ctx.fillStyle='#1f3a16';for(const[ox,oy,r] of [[-10,4,14],[10,6,12],[0,-7,15],[-3,9,11]]){ctx.beginPath();ctx.arc(cx+ox,cy+oy,r,0,Math.PI*2);ctx.fill();}
+      ctx.fillStyle='rgba(120,170,80,0.22)';ctx.beginPath();ctx.arc(cx-4,cy-6,8,0,Math.PI*2);ctx.fill();
+    } else if(h===1){ // tree
+      ctx.fillStyle='rgba(0,0,0,0.30)';ctx.beginPath();ctx.ellipse(cx+5,cy+8,21,12,0,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#3a2a18';ctx.fillRect(cx-4,cy-2,8,16);
+      ctx.fillStyle='#1c3614';ctx.beginPath();ctx.arc(cx,cy-6,22,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#274a1e';ctx.beginPath();ctx.arc(cx-9,cy-11,12,0,Math.PI*2);ctx.arc(cx+8,cy-4,11,0,Math.PI*2);ctx.fill();
+    } else { // wooden crate
+      ctx.fillStyle='#6b4a2a';ctx.fillRect(cx-18,cy-18,36,36);ctx.strokeStyle='#3a2814';ctx.lineWidth=3;ctx.strokeRect(cx-18,cy-18,36,36);
+      ctx.beginPath();ctx.moveTo(cx-18,cy-18);ctx.lineTo(cx+18,cy+18);ctx.moveTo(cx+18,cy-18);ctx.lineTo(cx-18,cy+18);ctx.stroke();
+    }
+  } else {
+    if(h===0){ // table
+      ctx.fillStyle='rgba(0,0,0,0.30)';ctx.fillRect(cx-21,cy-11,44,28);
+      ctx.fillStyle='#5a3f22';ctx.fillRect(cx-21,cy-14,42,26);ctx.fillStyle='#6e4f2c';ctx.fillRect(cx-18,cy-11,36,20);
+    } else if(h===1){ // crate
+      ctx.fillStyle='#4a4034';ctx.fillRect(cx-17,cy-17,34,34);ctx.strokeStyle='#2a241c';ctx.lineWidth=2;ctx.strokeRect(cx-17,cy-17,34,34);
+    } else { // cabinet
+      ctx.fillStyle='#3a2c1e';ctx.fillRect(cx-20,cy-18,40,36);ctx.fillStyle='#241a10';for(let r=-10;r<18;r+=12)ctx.fillRect(cx-17,cy+r,34,3);
+    }
+  }
+}
+function drawStealthWorld(camX,camY){
+  const ext=stealthScene==='exterior',B=buildingRect;
+  const sx0=Math.max(0,Math.floor(camX/TILE)),sy0=Math.max(0,Math.floor(camY/TILE));
+  const sx1=Math.min(MAP_W,sx0+Math.ceil(W/TILE)+2),sy1=Math.min(MAP_H,sy0+Math.ceil(H/TILE)+2);
+  for(let ty=sy0;ty<sy1;ty++)for(let tx=sx0;tx<sx1;tx++){
+    const sx=tx*TILE-camX,sy=ty*TILE-camY,wall=worldMap[ty][tx]===1;
+    const border=(tx===0||ty===0||tx===MAP_W-1||ty===MAP_H-1);
+    if(!wall){
+      if(ext){ // grass yard
+        ctx.fillStyle=(tx+ty)%2===0?'#243a1c':'#21351a';ctx.fillRect(sx,sy,TILE,TILE);
+        const h=(tx*53+ty*97);ctx.fillStyle='rgba(120,160,80,0.10)';
+        ctx.fillRect(sx+(h%48)+4,sy+((h*7)%48)+4,3,3);ctx.fillRect(sx+((h*3)%44)+8,sy+((h*11)%44)+8,2,2);
+      } else { // interior wood floor
+        ctx.fillStyle=ty%2===0?'#3a2c1c':'#34281a';ctx.fillRect(sx,sy,TILE,TILE);
+        ctx.fillStyle='rgba(255,255,255,0.02)';ctx.fillRect(sx,sy,TILE,2);
+        ctx.strokeStyle='rgba(0,0,0,0.18)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(sx,sy+TILE);ctx.lineTo(sx+TILE,sy+TILE);ctx.stroke();
+      }
+      // doorway threshold inside the house footprint
+      if(ext&&B&&inRect(tx,ty,B)){ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(sx+6,sy,TILE-12,TILE);}
+      continue;
+    }
+    if(border){ // perimeter fence (ext) / outer wall (int)
+      if(ext){ctx.fillStyle='#2a2418';ctx.fillRect(sx,sy,TILE,TILE);ctx.strokeStyle='#564a33';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(sx,sy+14);ctx.lineTo(sx+TILE,sy+14);ctx.moveTo(sx,sy+TILE-14);ctx.lineTo(sx+TILE,sy+TILE-14);ctx.stroke();for(let i=8;i<TILE;i+=16){ctx.fillStyle='#4a4030';ctx.fillRect(sx+i-2,sy+4,4,TILE-8);}}
+      else{ctx.fillStyle=(tx+ty)%2===0?'#2c2e36':'#26282f';ctx.fillRect(sx,sy,TILE,TILE);ctx.fillStyle='rgba(255,255,255,0.05)';ctx.fillRect(sx,sy,TILE,4);ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(sx,sy+TILE-6,TILE,6);}
+      continue;
+    }
+    if(ext&&B&&inRect(tx,ty,B)){ // house roof
+      ctx.fillStyle=(tx+ty)%2===0?'#4a2f24':'#43291f';ctx.fillRect(sx,sy,TILE,TILE);
+      ctx.strokeStyle='rgba(0,0,0,0.22)';ctx.lineWidth=1;for(let r=12;r<TILE;r+=14){ctx.beginPath();ctx.moveTo(sx,sy+r);ctx.lineTo(sx+TILE,sy+r);ctx.stroke();}
+      ctx.fillStyle='rgba(15,9,6,0.92)';
+      if(tx===B.x)ctx.fillRect(sx,sy,4,TILE);
+      if(tx===B.x+B.w-1)ctx.fillRect(sx+TILE-4,sy,4,TILE);
+      if(ty===B.y)ctx.fillRect(sx,sy,TILE,4);
+      if(ty===B.y+B.h-1)ctx.fillRect(sx,sy+TILE-4,TILE,4);
+      continue;
+    }
+    if(coverTiles.has(ty*MAP_W+tx)){ // decorative cover (tree/crate/furniture) on a ground base
+      ctx.fillStyle=ext?'#243a1c':'#34281a';ctx.fillRect(sx,sy,TILE,TILE);
+      drawCover(sx,sy,tx,ty,ext);
+      continue;
+    }
+    // structural wall (interior room dividers / compound walls)
+    if(ext){ctx.fillStyle=(tx+ty)%2===0?'#3a3a42':'#34343c';ctx.fillRect(sx,sy,TILE,TILE);ctx.fillStyle='rgba(255,255,255,0.04)';ctx.fillRect(sx,sy,TILE,3);ctx.fillStyle='rgba(0,0,0,0.35)';ctx.fillRect(sx,sy+TILE-5,TILE,5);}
+    else{ctx.fillStyle=(tx+ty)%2===0?'#5b4636':'#52402f';ctx.fillRect(sx,sy,TILE,TILE);ctx.fillStyle='rgba(255,255,255,0.04)';ctx.fillRect(sx,sy,TILE,3);ctx.fillStyle='rgba(0,0,0,0.32)';ctx.fillRect(sx,sy+TILE-6,TILE,6);}
+  }
+}
+
+// ── Mission briefing (animated tactical plan + deploy countdown) ─────────────
+let briefT=0,briefPhase='video',countdownT=5,briefRegion=null;
+const BRIEF_VIDEO_DUR=5.0;
+function drawBriefing(dt){
+  briefT+=dt;
+  ctx.fillStyle='#05080a';ctx.fillRect(0,0,W,H);
+  for(let i=0;i<40;i++){const x=((i*131.3+briefT*14)%W),y=((i*97.1+briefT*7)%H);ctx.fillStyle='rgba(127,212,255,0.05)';ctx.beginPath();ctx.arc(x,y,1.3,0,Math.PI*2);ctx.fill();}
+  ctx.fillStyle='#7fd4ff';ctx.shadowColor='#7fd4ff';ctx.shadowBlur=14;ctx.font='bold 26px Courier New';ctx.textAlign='center';ctx.fillText('MISSION BRIEFING — '+mission.name.toUpperCase(),W/2,58);ctx.shadowBlur=0;
+  ctx.fillStyle='#9bb4c4';ctx.font='13px Courier New';ctx.fillText(mission.intro,W/2,84);
+  // Tactical map panel (fit the 32×32 grid)
+  const pw=Math.min(W*0.6,640),sc=pw/MAP_W,ph=sc*MAP_H,px=W/2-pw/2,py=104;
+  ctx.fillStyle='#0a120a';ctx.fillRect(px,py,pw,ph);ctx.strokeStyle='#2a4a2a';ctx.lineWidth=2;ctx.strokeRect(px,py,pw,ph);
+  const w2p=(wx,wy)=>[px+(wx/(MAP_W*TILE))*pw,py+(wy/(MAP_H*TILE))*ph];
+  for(let ty=0;ty<MAP_H;ty++)for(let tx=0;tx<MAP_W;tx++){if(worldMap[ty][tx]===1){const inB=inRect(tx,ty,buildingRect);ctx.fillStyle=inB?'#5a3a2a':'#26301f';ctx.fillRect(px+tx*sc,py+ty*sc,sc+0.6,sc+0.6);}}
+  if(buildingRect){const[bx,by]=w2p(buildingRect.x*TILE,buildingRect.y*TILE);ctx.fillStyle='rgba(255,210,160,0.9)';ctx.font='bold 10px Courier New';ctx.fillText('HOUSE',bx+buildingRect.w*sc/2,by+buildingRect.h*sc/2+3);}
+  cameras.forEach(c=>{const[X,Y]=w2p(c.x,c.y);ctx.fillStyle='rgba(63,169,255,0.18)';ctx.beginPath();ctx.moveTo(X,Y);ctx.arc(X,Y,18,c.angle-CAM_HALF,c.angle+CAM_HALF);ctx.closePath();ctx.fill();ctx.fillStyle='#3fa9ff';ctx.fillRect(X-3,Y-3,6,6);});
+  guards.forEach(g=>{const[X,Y]=w2p(g.x,g.y);ctx.fillStyle='rgba(255,80,80,0.16)';ctx.beginPath();ctx.moveTo(X,Y);ctx.arc(X,Y,20,g.angle-VIEW_HALF,g.angle+VIEW_HALF);ctx.closePath();ctx.fill();ctx.fillStyle='#ff5555';ctx.beginPath();ctx.arc(X,Y,3.5,0,Math.PI*2);ctx.fill();});
+  // Route: corner (spawn/extract) → house door → back
+  const[ax,ay]=w2p(extractionZone.x,extractionZone.y),[dxp,dyp]=w2p(doorIn.x,doorIn.y);
+  ctx.strokeStyle='rgba(255,215,0,0.55)';ctx.lineWidth=2;ctx.setLineDash([6,5]);ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(dxp,dyp);ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(ax,ay,6,0,Math.PI*2);ctx.fill();ctx.fillStyle='#000';ctx.font='bold 8px Courier New';ctx.fillText('S/E',ax,ay+3);
+  ctx.fillStyle='#7fd4ff';ctx.beginPath();ctx.arc(dxp,dyp,6,0,Math.PI*2);ctx.fill();ctx.fillStyle='#000';ctx.fillText('D',dxp,dyp+3);
+  // Animated agent tracing the plan
+  const seg=BRIEF_VIDEO_DUR,p=(briefT%seg)/seg;let pos,cap;
+  if(p<0.4){const t=p/0.4;pos=[ax+(dxp-ax)*t,ay+(dyp-ay)*t];cap='1. INFILTRATE — reach the house';}
+  else if(p<0.6){pos=[dxp,dyp];cap='2. STEAL THE '+(mission.target==='hostage'?'HOSTAGE':'INTEL');}
+  else{const t=(p-0.6)/0.4;pos=[dxp+(ax-dxp)*t,dyp+(ay-dyp)*t];cap='3. EXTRACT — return to the corner';}
+  ctx.fillStyle='#ffd700';ctx.shadowColor='#ffd700';ctx.shadowBlur=12;ctx.beginPath();ctx.arc(pos[0],pos[1],5,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
+  ctx.fillStyle='#ffd700';ctx.font='bold 15px Courier New';ctx.textAlign='center';ctx.fillText(cap,W/2,py+ph+30);
+  // Legend
+  ctx.font='11px Courier New';
+  ctx.fillStyle='#ff7777';ctx.fillText('● guards',W/2-200,py+ph+52);ctx.fillStyle='#3fa9ff';ctx.fillText('■ cameras',W/2-80,py+ph+52);ctx.fillStyle='#fff';ctx.fillText('● you (S/E)',W/2+40,py+ph+52);ctx.fillStyle='#ffd700';ctx.fillText('↦ route',W/2+170,py+ph+52);
+  // Phase: looping video, then a deploy countdown
+  if(briefPhase==='video'){
+    if(briefT>=BRIEF_VIDEO_DUR){briefPhase='countdown';countdownT=5;}
+    const bw=210,bh=42,bx=W/2-bw/2,by2=py+ph+72,hov=mHov(bx,by2,bw,bh);
+    ctx.fillStyle=hov?'#1a5a2a':'#123a1d';ctx.fillRect(bx,by2,bw,bh);ctx.strokeStyle='#2ecc71';ctx.lineWidth=2;ctx.strokeRect(bx,by2,bw,bh);
+    ctx.fillStyle='#fff';ctx.font='bold 15px Courier New';ctx.fillText('▶ DEPLOY NOW',bx+bw/2,by2+27);
+    briefRegion={x:bx,y:by2,w:bw,h:bh};
+  } else {
+    countdownT-=dt;
+    if(countdownT<=0){beginMissionPlay();return;}
+    ctx.fillStyle='#e63946';ctx.shadowColor='#e63946';ctx.shadowBlur=22;ctx.font='bold 42px Courier New';ctx.fillText('DEPLOY IN '+Math.ceil(countdownT),W/2,py+ph+100);ctx.shadowBlur=0;
+    briefRegion=null;
+  }
+}
+
 // ── Menu ───────────────────────────────────────────────────────────────────
-let menuAnim=0,menuTab='main';
+let menuAnim=0,menuTab='main',menuView='tiles'; // menuView: tiles | zombies | campaign
 const MENU_TABS=['main','locker','store','stats'];
 const MENU_TAB_LABELS={main:'PLAY',locker:'LOCKER',store:'STORE',stats:'STATS'};
 // Clickable regions are rebuilt every menu frame; the click handler walks them.
@@ -1590,7 +2093,7 @@ function drawMenu(){
     ctx.fillStyle=active?'#e63946':(hov?'#3a1414':'#141414');ctx.fillRect(x,ty,tw,th);
     ctx.strokeStyle=active?'#ff8585':'#333';ctx.lineWidth=2;ctx.strokeRect(x,ty,tw,th);
     ctx.fillStyle=active?'#fff':'#999';ctx.font='bold 14px Courier New';ctx.textAlign='center';ctx.fillText(MENU_TAB_LABELS[t],x+tw/2,ty+24);
-    mReg(x,ty,tw,th,()=>{menuTab=t;});
+    mReg(x,ty,tw,th,()=>{if(t==='main'&&menuTab!=='main')menuView='tiles';menuTab=t;});
   });
   // Content
   if(menuTab==='main')drawMainMenu();
@@ -1601,16 +2104,78 @@ function drawMenu(){
 }
 
 function drawMainMenu(){
+  if(menuView==='campaign')drawCampaignSelect();
+  else if(menuView==='zombies')drawZombiesMenu();
+  else drawModeTiles();
+}
+
+// Small "back to mode select" button used by the drilled-in views
+function backButton(){
+  const bw=92,bh=28,bx=24,by=150,hov=mHov(bx,by,bw,bh);
+  ctx.fillStyle=hov?'#333':'#1a1a1a';ctx.fillRect(bx,by,bw,bh);
+  ctx.strokeStyle='#555';ctx.lineWidth=1;ctx.strokeRect(bx,by,bw,bh);
+  ctx.fillStyle='#ccc';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('‹ BACK',bx+bw/2,by+18);
+  mReg(bx,by,bw,bh,()=>{menuView='tiles';});
+}
+
+function drawBigTile(x,y,w,h,title,sub,desc,accent,bg,fn){
+  const hov=mHov(x,y,w,h);
+  ctx.fillStyle=bg;ctx.fillRect(x,y,w,h);
+  for(let cy=0;cy<h;cy+=18)for(let cx=0;cx<w;cx+=18){if((Math.floor(cx/18)+Math.floor(cy/18))%2){ctx.fillStyle='rgba(255,255,255,0.015)';ctx.fillRect(x+cx,y+cy,18,18);}}
+  ctx.strokeStyle=hov?accent:'#333';ctx.lineWidth=hov?3:1.5;ctx.strokeRect(x,y,w,h);
+  ctx.fillStyle=accent;ctx.shadowColor=accent;ctx.shadowBlur=hov?22:6;ctx.font='bold 34px Courier New';ctx.textAlign='center';ctx.fillText(title,x+w/2,y+h/2-12);ctx.shadowBlur=0;
+  ctx.fillStyle='#ddd';ctx.font='bold 15px Courier New';ctx.fillText(sub,x+w/2,y+h/2+16);
+  ctx.fillStyle='#888';ctx.font='11px Courier New';ctx.fillText(desc,x+w/2,y+h/2+42);
+  ctx.fillStyle=hov?accent:'#444';ctx.font='bold 12px Courier New';ctx.fillText(hov?'▶ ENTER':'— click —',x+w/2,y+h-22);
+  mReg(x,y,w,h,fn);
+}
+
+function drawModeTiles(){
+  const r=rankFor(saveData.kills);
+  ctx.fillStyle='#888';ctx.font='14px Courier New';ctx.textAlign='center';ctx.fillText('CHOOSE YOUR OPERATION',W/2,190);
+  ctx.fillStyle=r.color;ctx.font='bold 12px Courier New';ctx.fillText(`RANK: ${r.name.toUpperCase()}  ·  ${saveData.kills} KILLS  ·  🪙 ${saveData.coins}`,W/2,214);
+  const done=saveData.campaignDone.length,total=CAMPAIGN.flatMap(c=>c.missions).length;
+  const tw=Math.min(320,(W-140)/2),th=250,g=40,totalW=tw*2+g,x0=W/2-totalW/2,ty=250;
+  drawBigTile(x0,ty,tw,th,'CAMPAIGN','STEALTH OPS',`Infiltrate · ${done}/${total} missions done`,'#3fa9ff','#0a1822',()=>{menuView='campaign';});
+  drawBigTile(x0+tw+g,ty,tw,th,'ZOMBIES','WAVE SURVIVAL','20 levels · 5 maps · bosses','#e63946','#1a0808',()=>{menuView='zombies';});
+}
+
+function drawCampaignSelect(){
+  backButton();
+  ctx.fillStyle='#3fa9ff';ctx.shadowColor='#3fa9ff';ctx.shadowBlur=14;ctx.font='bold 24px Courier New';ctx.textAlign='center';ctx.fillText('STEALTH OPS',W/2,186);ctx.shadowBlur=0;
+  ctx.fillStyle='#888';ctx.font='12px Courier New';ctx.fillText('Infiltrate the base, secure the objective, and reach extraction unseen.',W/2,210);
+  let y=246;
+  CAMPAIGN.forEach(ch=>{
+    ctx.fillStyle='#7fd4ff';ctx.font='bold 14px Courier New';ctx.textAlign='center';ctx.fillText(ch.title,W/2,y);y+=10;
+    ch.missions.forEach((m,i)=>{
+      const unlocked=missionUnlocked(ch.missions,i),done=saveData.campaignDone.includes(m.id);
+      const rw=Math.min(560,W-80),rh=54,rx=W/2-rw/2,ry=y+8,hov=mHov(rx,ry,rw,rh)&&unlocked;
+      ctx.fillStyle=done?'#0f2418':(unlocked?(hov?'#15242f':'#101820'):'#0a0a0a');ctx.fillRect(rx,ry,rw,rh);
+      ctx.strokeStyle=done?'#2ecc71':(unlocked?(hov?'#7fd4ff':'#2c4a5e'):'#222');ctx.lineWidth=1;ctx.strokeRect(rx,ry,rw,rh);
+      ctx.textAlign='center';ctx.font='17px Courier New';ctx.fillStyle=done?'#2ecc71':(unlocked?'#3fa9ff':'#555');ctx.fillText(done?'✓':(unlocked?'▶':'🔒'),rx+28,ry+34);
+      ctx.textAlign='left';ctx.fillStyle=unlocked?'#fff':'#555';ctx.font='bold 14px Courier New';ctx.fillText(m.name,rx+54,ry+24);
+      ctx.fillStyle=unlocked?'#999':'#444';ctx.font='10px Courier New';ctx.fillText(unlocked?m.intro:'Complete the previous mission to unlock.',rx+54,ry+42);
+      ctx.textAlign='right';ctx.fillStyle='#7a8a99';ctx.font='10px Courier New';ctx.fillText(`${MAPS[m.mapIdx].name} · ${m.guards} guards`,rx+rw-14,ry+22);
+      ctx.fillStyle=done?'#2ecc71':(unlocked?'#ffd24a':'#555');ctx.fillText(done?(hov?'▶ REPLAY':'✓ DONE · REPLAY'):(unlocked?'CLICK TO START':'LOCKED'),rx+rw-14,ry+40);
+      if(unlocked)mReg(rx,ry,rw,rh,()=>startMission(m.id));
+      y+=rh+10;
+    });
+    y+=12;
+  });
+}
+
+function drawZombiesMenu(){
+  backButton();
   const r=rankFor(saveData.kills);
   ctx.fillStyle='#666';ctx.font='14px Courier New';ctx.textAlign='center';ctx.fillText('TOP-DOWN ZOMBIE SURVIVAL',W/2,182);
   ctx.fillStyle=r.color;ctx.font='bold 13px Courier New';ctx.fillText(`RANK: ${r.name.toUpperCase()}  ·  ${saveData.kills} TOTAL KILLS`,W/2,204);
   ctx.fillStyle='#ffdd00';ctx.font='13px Courier New';ctx.fillText(`BEST SCORE: ${Math.max(highScore,saveData.bestScore)}  ·  HIGHEST LEVEL: ${saveData.highestLevel}/20`,W/2,224);
   ['20 LEVELS  ·  5 MAPS  ·  RUINS','BUY 🧺  ·  UPGRADE 🔧  ·  PERKS  ·  BOSS EVERY 5'].forEach((f,i)=>{ctx.fillStyle=`rgba(140,140,140,${0.5+Math.sin(menuAnim+i)*0.2})`;ctx.font='11px Courier New';ctx.fillText(f,W/2,248+i*16);});
-  // START CAMPAIGN
+  // SURVIVAL RUN (chains all 4 story maps)
   const bw=260,bh=50,bx=W/2-bw/2,by=288,hov=mHov(bx,by,bw,bh);
   ctx.fillStyle=hov?'#e63946':'#7a1010';ctx.fillRect(bx,by,bw,bh);
   ctx.strokeStyle='#e63946';ctx.lineWidth=2;ctx.strokeRect(bx,by,bw,bh);
-  ctx.fillStyle='#fff';ctx.font='bold 21px Courier New';ctx.textAlign='center';ctx.fillText('START CAMPAIGN',W/2,by+33);
+  ctx.fillStyle='#fff';ctx.font='bold 21px Courier New';ctx.textAlign='center';ctx.fillText('SURVIVAL RUN',W/2,by+33);
   ctx.fillStyle='#c98';ctx.font='10px Courier New';ctx.fillText('City → Bunker → Wasteland → Graveyard',W/2,by+47);
   mReg(bx,by,bw,bh,()=>startGame());
   // Map picker
@@ -1745,10 +2310,22 @@ function handleClick(e){
   if(state===STATE.PLAYING&&buildMode){placeWall(mx,my);return;}
   if(state===STATE.PLAYING&&airstrikePending){const camX=player.x-W/2,camY=player.y-H/2;callAirstrike(mx+camX,my+camY);airstrikePending=false;return;}
   if(state===STATE.MENU){for(const reg of menuRegions){if(mx>reg.x&&mx<reg.x+reg.w&&my>reg.y&&my<reg.y+reg.h){reg.action();break;}}}
-  else if(state===STATE.PAUSED){const b=PAUSE_QUIT;if(mx>b.x&&mx<b.x+b.w&&my>b.y&&my<b.y+b.h){commitRun(false);state=STATE.MENU;menuTab='main';}}
-  else if(state===STATE.GAME_OVER){const by=H/2+80;if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44)restartGame();if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44){state=STATE.MENU;menuTab='main';}}
-  else if(state===STATE.WIN){const by=H/2+80;if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44)restartGame();if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44){state=STATE.MENU;menuTab='main';}}
+  else if(state===STATE.BRIEFING){if(briefRegion&&mx>briefRegion.x&&mx<briefRegion.x+briefRegion.w&&my>briefRegion.y&&my<briefRegion.y+briefRegion.h)beginMissionPlay();}
+  else if(state===STATE.PAUSED){const b=PAUSE_QUIT;if(mx>b.x&&mx<b.x+b.w&&my>b.y&&my<b.y+b.h){commitRun(false);toMenu(gameMode==='campaign'?'campaign':'tiles');}}
+  else if(state===STATE.GAME_OVER){const by=H/2+80;if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44)restartGame();if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44)toMenu(gameMode==='campaign'?'campaign':'tiles');}
+  else if(state===STATE.WIN){const by=H/2+80;
+    if(gameMode==='campaign'){
+      const nxt=mission?nextMission(mission.id):null;
+      if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44){if(nxt)startMission(nxt.id);else toMenu('campaign');}
+      if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44)toMenu('campaign');
+    } else {
+      if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44)restartGame();
+      if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44)toMenu('tiles');
+    }
+  }
 }
+// Return to the menu, resetting mode so the next launch is clean
+function toMenu(view){gameMode='zombies';mission=null;state=STATE.MENU;menuTab='main';menuView=view||'tiles';}
 
 // ── Main loop ──────────────────────────────────────────────────────────────
 let lastTime=performance.now();
@@ -1757,8 +2334,13 @@ function loop(now){
   ctx.save();
   if(state===STATE.PLAYING||state===STATE.PAUSED){updateShake(dt);ctx.translate(Math.round(shk.x),Math.round(shk.y));}
   if(state===STATE.MENU){drawMenu();}
+  else if(state===STATE.BRIEFING){drawBriefing(dt);}
   else if(state===STATE.PLAYING||state===STATE.PAUSED){
     if(state===STATE.PLAYING){
+      if(gameMode==='campaign'){
+        updatePlayer(dt);updateBullets(dt);updateParticles(dt);updateNotifs(dt);
+        updateStealth(dt);
+      } else {
       updatePlayer(dt);updateBullets(dt);updateParticles(dt);updatePickups(dt);
       updateGrenades(dt);updateDeployables(dt);updateAirBombs(dt);updateBarricades(dt);updateBuiltWalls(dt);updateInventoryAnim(dt);updateNotifs(dt);
       if(waveActive){
@@ -1767,20 +2349,24 @@ function loop(now){
       }
       if(levelComplete){levelTimer-=dt;if(levelTimer<=0){levelComplete=false;advanceLevel();}}
       if(!waveActive&&!levelComplete){if(levelStartTimer>0){levelStartTimer-=dt;if(levelStartTimer<=0)startWave();}}
+      }
     }
     const camX=Math.round(player.x-W/2),camY=Math.round(player.y-H/2);
     ctx.fillStyle=mapCfg.bg;ctx.fillRect(0,0,W,H);
-    drawWorld(camX,camY);drawDebris(camX,camY);drawMapObjects(camX,camY);
+    if(gameMode==='campaign'){drawStealthWorld(camX,camY);}
+    else{drawWorld(camX,camY);drawDebris(camX,camY);drawMapObjects(camX,camY);}
     drawBuiltWalls(camX,camY);drawDeployables(camX,camY);drawAirBombs(camX,camY);drawPickups(camX,camY);drawParticles(camX,camY);
     drawGrenades(camX,camY);drawBullets(camX,camY);
     enemies.forEach(e=>drawEnemy(e,camX,camY));
     drawPlayer(camX,camY);drawFlashlight(camX,camY);
+    if(gameMode==='campaign')drawStealth(camX,camY);
     drawScreenFlash();
-    drawHUD();drawInventory();drawBuyStation();drawWorkshop();drawBigMap();
+    if(gameMode==='campaign')drawStealthHUD();
+    else{drawHUD();drawInventory();drawBuyStation();drawWorkshop();drawBigMap();}
     if(state===STATE.PAUSED)drawPaused();
   }
   else if(state===STATE.GAME_OVER)drawGameOver();
-  else if(state===STATE.WIN)drawWin();
+  else if(state===STATE.WIN){if(gameMode==='campaign')drawMissionComplete();else drawWin();}
   ctx.restore();
   requestAnimationFrame(loop);
 }
