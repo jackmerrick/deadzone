@@ -255,6 +255,14 @@ function getAmmoBonus(wid,base){
   const u=weaponUpgrades[wid]||{};
   return Math.round(base*(1+(u.ammoBoost||0)*0.5));
 }
+// Add ammo to a weapon, capped at AMMO_CAP (pistol stays infinite). Returns amount actually added.
+const AMMO_CAP=300;
+function addAmmo(wid, amount){
+  if(wid==='pistol'){player.ammo[wid]=Infinity;return 0;}
+  const before=Number.isFinite(player.ammo[wid])?player.ammo[wid]:0;
+  player.ammo[wid]=Math.min(AMMO_CAP, before+amount);
+  return player.ammo[wid]-before;
+}
 function resetUpgrades(){
   weaponUpgrades={};
   ALL_WEAPONS.forEach(w=>{weaponUpgrades[w]={damage:0,fireSpeed:0,range:0,ammoBoost:0};});
@@ -531,7 +539,7 @@ const PERKS_DEF=[
 const KILLSTREAKS_DEF=[
   {id:'airstrike',name:'Airstrike',     cost:5000, color:'#ff8800',symbol:'🛩',desc:'Click a spot — bombing run along a line'},
   {id:'mortar',   name:'Mortar Barrage',cost:3500, color:'#ffaa33',symbol:'💥',desc:'Random explosions rain across the map'},
-  {id:'nuke',     name:'Nuke',          cost:10000,color:'#ffffff',symbol:'☢',desc:'Instantly kills every zombie on the map'},
+  {id:'nuke',     name:'Nuke',          cost:20000,color:'#ffffff',symbol:'☢',desc:'Instantly kills every zombie on the map'},
 ];
 const SWITCH_POS={city:{tx:15,ty:8},bunker:{tx:12,ty:15},wasteland:{tx:14,ty:14},graveyard:{tx:16,ty:16},arctic:{tx:14,ty:9}};
 const PERK_POS=[{tx:4,ty:4},{tx:26,ty:4},{tx:4,ty:26},{tx:26,ty:26}];
@@ -591,12 +599,12 @@ const SHOP_ITEMS_BY_TAB={
   deployables:[
     {id:'mine',     name:'Proximity Mine x2',cost:350,type:'deployable',desc:'Place [F], cycle [C] — detonates when zombies step near'},
     {id:'claymore', name:'Claymore x2',      cost:400,type:'deployable',desc:'Place [F], cycle [C] — directional blast facing your aim'},
-    {id:'sentry',   name:'Sentry Gun',       cost:500,type:'deployable',qty:1,desc:'Place [F] — auto-fires at zombies, can be destroyed'},
+    {id:'sentry',   name:'Sentry Gun',       cost:1000,type:'deployable',qty:1,desc:'Place [F] — auto-fires at zombies, can be destroyed'},
   ],
   killstreaks:[
     {id:'airstrike',name:'Airstrike',     cost:5000, type:'killstreak',desc:'[E] use, click a spot — bombing run along a line'},
     {id:'mortar',   name:'Mortar Barrage',cost:3500, type:'killstreak',desc:'[E] use — explosions rain across the whole map'},
-    {id:'nuke',     name:'Nuke',          cost:10000,type:'killstreak',desc:'[E] use — instantly kills every zombie on the map'},
+    {id:'nuke',     name:'Nuke',          cost:20000,type:'killstreak',desc:'[E] use — instantly kills every zombie on the map'},
   ],
   armour:[
     {id:'lightArmour',name:'Light Armour',cost:400,type:'armour',desc:'+50 armour HP, absorbs 70% of damage'},
@@ -618,7 +626,7 @@ function buyItem(item){
   if(item.type==='weapon'){
     if(!player.weapons.includes(item.id))player.weapons.push(item.id);
     const base={shotgun:24,rifle:40,sniper:15,rocket:5}[item.id]||0;
-    player.ammo[item.id]=(player.ammo[item.id]||0)+getAmmoBonus(item.id,base);
+    addAmmo(item.id,getAmmoBonus(item.id,base));
     player.weapon=item.id;
     addNotif(`Bought ${item.name}!`,'#2ecc71',2);
   } else if(item.type==='grenade'){
@@ -641,7 +649,10 @@ function buyItem(item){
   } else if(item.type==='ammo'){
     const map={ammoShotgun:['shotgun',24],ammoRifle:['rifle',40],ammoSniper:['sniper',15],ammoRocket:['rocket',5]};
     const[w,n]=map[item.id]||[];
-    if(w){const actual=getAmmoBonus(w,n);player.ammo[w]=(player.ammo[w]||0)+actual;addNotif(`+${actual} ${w} ammo`,'#aaa',2);}
+    if(w){
+      if((player.ammo[w]||0)>=AMMO_CAP){currency+=item.cost;addNotif(`${w} ammo full (cap ${AMMO_CAP})`,'#ff8800',2);return;}
+      const added=addAmmo(w,getAmmoBonus(w,n));addNotif(`+${added} ${w} ammo`,'#aaa',2);
+    }
   }
 }
 
@@ -776,7 +787,7 @@ const DEPLOY_DEF={
   claymore:{arm:1.0,range:175,arc:0.95,dmg:300},
   sentry:  {arm:0.4,hp:320,maxHp:320,range:340,fireCd:0,fireRate:0.16,dmg:32,bulletSpd:780},
 };
-const SENTRY_CAP=3;
+const SENTRY_CAP=1;
 function cycleDeployable(){
   const order=['mine','claymore','sentry'];
   const owned=order.filter(t=>player.deployables[t]>0);
@@ -1211,11 +1222,11 @@ function updatePickups(dt){pickups=pickups.filter(p=>{
     if(p.type==='health'){player.hp=Math.min(player.maxHp,player.hp+40);spawnBlood(p.x,p.y,6,'#22cc55');addNotif('+40 HP','#2ecc71',1.5);}
     else if(p.type==='cash'){currency+=p.amount;spawnExplosion(p.x,p.y,12);addShake(6,0.2);addNotif(`💰 +£${p.amount} cash drop!`,'#ffd700',3);}
     else if(p.type==='armour'){player.armourHp=Math.min(player.armourHp+p.amount,200);player.maxArmourHp=Math.max(player.maxArmourHp,player.armourHp);addNotif(`🛡 +${p.amount} armour`,'#4488ff',1.8);}
-    else if(p.type==='ammo'){if(player.weapons.includes(p.weapon)){const n=getAmmoBonus(p.weapon,p.amount);player.ammo[p.weapon]=(player.ammo[p.weapon]||0)+n;addNotif(`+${n} ${p.weapon} ammo`,'#ffcc44',1.8);}else{currency+=40;addNotif('💰 +£40','#ffd700',1.5);}}
+    else if(p.type==='ammo'){if(player.weapons.includes(p.weapon)){const n=addAmmo(p.weapon,getAmmoBonus(p.weapon,p.amount));addNotif(`+${n} ${p.weapon} ammo`,'#ffcc44',1.8);}else{currency+=40;addNotif('💰 +£40','#ffd700',1.5);}}
     else if(p.type==='grenade'){player.grenades[p.gtype]=(player.grenades[p.gtype]||0)+p.amount;addNotif(`+${p.amount} ${p.gtype}`,'#aaffaa',1.8);}
     else if(p.type==='machinegun'){
       if(!player.weapons.includes('machinegun'))player.weapons.push('machinegun');
-      player.ammo.machinegun=(player.ammo.machinegun||0)+getAmmoBonus('machinegun',120);
+      addAmmo('machinegun',getAmmoBonus('machinegun',120));
       player.weapon='machinegun';
       addNotif('🔫 MACHINE GUN acquired! +120 ammo — press [5]','#ffcc44',4);
     }
@@ -1731,7 +1742,7 @@ function advanceLevel(){
   // Safety net: auto-collect any boss loot the player didn't physically reach
   pickups.forEach(p=>{
     if(p.type==='cash'){currency+=p.amount;addNotif(`💰 +£${p.amount} collected`,'#ffd700',3);}
-    else if(p.type==='machinegun'&&!player.weapons.includes('machinegun')){player.weapons.push('machinegun');player.ammo.machinegun=(player.ammo.machinegun||0)+getAmmoBonus('machinegun',120);addNotif('🔫 Machine gun collected!','#ffcc44',3);}
+    else if(p.type==='machinegun'&&!player.weapons.includes('machinegun')){player.weapons.push('machinegun');addAmmo('machinegun',getAmmoBonus('machinegun',120));addNotif('🔫 Machine gun collected!','#ffcc44',3);}
   });
   pickups=[];
   clearBuiltWalls();buildMode=false;
