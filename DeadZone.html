@@ -6,6 +6,10 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>Dead Zone</title>
+  <!-- Firebase (compat builds so they work in this plain inline script, no bundler) -->
+  <script src="https://www.gstatic.com/firebasejs/11.1.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.1.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore-compat.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #000; margin: 0; overflow: hidden; font-family: 'Courier New', monospace; }
@@ -14,6 +18,54 @@
 </head>
 <body>
 <canvas id="game"></canvas>
+
+<!-- ── Cloud account UI (Firebase) ─────────────────────────────────────────── -->
+<style>
+  #dzAcct{position:fixed;left:12px;top:12px;z-index:20;font-family:'Courier New',monospace;font-size:12px;color:#ccc;display:none;}
+  #dzAcct button{font-family:'Courier New',monospace;cursor:pointer;background:#1a0808;color:#fff;border:1px solid #e63946;padding:6px 10px;font-size:12px;border-radius:3px;}
+  #dzAcct button:hover{background:#7a1010;}
+  #dzAcctInfo{background:rgba(0,0,0,0.55);border:1px solid #333;border-radius:3px;padding:6px 10px;display:flex;gap:10px;align-items:center;}
+  #dzAcctInfo .em{color:#7fd4ff;}
+  #dzAcctInfo .st{color:#2ecc71;font-size:11px;}
+  #dzLogout{padding:3px 8px !important;border-color:#555 !important;background:#1a1a1a !important;}
+  #dzAuth{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,0.78);display:none;align-items:center;justify-content:center;font-family:'Courier New',monospace;}
+  #dzAuthBox{background:#0d0d0d;border:2px solid #e63946;border-radius:6px;padding:26px 28px;width:320px;box-shadow:0 0 40px rgba(230,57,70,0.3);}
+  #dzAuthBox h2{color:#e63946;font-size:20px;text-align:center;margin-bottom:4px;letter-spacing:2px;}
+  #dzAuthBox p.sub{color:#888;font-size:11px;text-align:center;margin-bottom:18px;}
+  #dzAuthBox input{width:100%;box-sizing:border-box;margin-bottom:12px;padding:10px;background:#000;border:1px solid #444;color:#fff;font-family:'Courier New',monospace;font-size:13px;border-radius:3px;}
+  #dzAuthBox input:focus{outline:none;border-color:#e63946;}
+  #dzAuthBox .row{display:flex;gap:10px;}
+  #dzAuthBox .row button{flex:1;padding:10px;font-family:'Courier New',monospace;font-size:13px;font-weight:bold;cursor:pointer;border-radius:3px;border:1px solid;}
+  #dzLogin{background:#e63946;color:#fff;border-color:#e63946;}
+  #dzLogin:hover{background:#ff5a67;}
+  #dzSignup{background:#1a1a1a;color:#ccc;border-color:#555;}
+  #dzSignup:hover{background:#2a2a2a;}
+  #dzAuthErr{color:#ff7676;font-size:11px;min-height:14px;text-align:center;margin-bottom:10px;}
+  #dzAuthClose{display:block;margin:14px auto 0;background:none;border:none;color:#666;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;text-decoration:underline;}
+</style>
+<div id="dzAcct">
+  <button id="dzSignInBtn">☁ SIGN IN · CLOUD SAVE</button>
+  <div id="dzAcctInfo" style="display:none;">
+    <span class="em" id="dzEmail"></span>
+    <span class="st" id="dzStatus"></span>
+    <button id="dzLogout">LOG OUT</button>
+  </div>
+</div>
+<div id="dzAuth">
+  <div id="dzAuthBox">
+    <h2>DEAD ZONE</h2>
+    <p class="sub">Sign in to sync your progress across devices</p>
+    <div id="dzAuthErr"></div>
+    <input id="dzInEmail" type="email" placeholder="email" autocomplete="email">
+    <input id="dzInPass" type="password" placeholder="password (6+ chars)" autocomplete="current-password">
+    <div class="row">
+      <button id="dzLogin">LOG IN</button>
+      <button id="dzSignup">SIGN UP</button>
+    </div>
+    <button id="dzAuthClose">cancel</button>
+  </div>
+</div>
+
 <script>
 let W=window.innerWidth,H=window.innerHeight;
 const canvas=document.getElementById('game');
@@ -2371,6 +2423,123 @@ function loop(now){
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
+
+// ── Cloud accounts + save sync (Firebase) ────────────────────────────────────
+// Lives at the end of the game script so it can read/replace saveData, writeSave
+// and highScore directly. localStorage stays the source of truth offline; when a
+// user is logged in we mirror the save into Firestore (users/{uid}) and merge on
+// login so progress is never lost.
+(function(){
+  const firebaseConfig = {
+    apiKey: "AIzaSyB_GEI5SQQLU-8zbtDU1zRkmLxM_qAn668",
+    authDomain: "deadzone-d04d2.firebaseapp.com",
+    projectId: "deadzone-d04d2",
+    storageBucket: "deadzone-d04d2.firebasestorage.app",
+    messagingSenderId: "67642901290",
+    appId: "1:67642901290:web:eb552ff5432be05efc5453"
+  };
+  if(typeof firebase==='undefined'){console.warn('Firebase SDK blocked/offline — running local-only');return;}
+  firebase.initializeApp(firebaseConfig);
+  const auth=firebase.auth(), db=firebase.firestore();
+
+  const el=id=>document.getElementById(id);
+  const acct=el('dzAcct'),info=el('dzAcctInfo'),signInBtn=el('dzSignInBtn');
+  const modal=el('dzAuth'),emailEl=el('dzEmail'),statusEl=el('dzStatus'),errEl=el('dzAuthErr');
+  const inEmail=el('dzInEmail'),inPass=el('dzInPass');
+
+  // stop typing in the form from reaching the game's WASD/key handlers
+  [inEmail,inPass].forEach(i=>['keydown','keyup','keypress'].forEach(ev=>i.addEventListener(ev,e=>e.stopPropagation())));
+
+  function openModal(){errEl.textContent='';modal.style.display='flex';inEmail.focus();}
+  function closeModal(){modal.style.display='none';}
+  function setStatus(s,c){statusEl.textContent=s;statusEl.style.color=c||'#2ecc71';}
+  signInBtn.onclick=openModal;
+  el('dzAuthClose').onclick=closeModal;
+  el('dzLogout').onclick=()=>auth.signOut();
+  el('dzLogin').onclick=()=>doAuth('login');
+  el('dzSignup').onclick=()=>doAuth('signup');
+  inPass.addEventListener('keydown',e=>{if(e.key==='Enter')doAuth('login');});
+
+  function doAuth(kind){
+    const email=inEmail.value.trim(),pass=inPass.value;
+    if(!email||!pass){errEl.textContent='Enter an email and password.';return;}
+    errEl.textContent='…';
+    const p=kind==='signup'?auth.createUserWithEmailAndPassword(email,pass)
+                           :auth.signInWithEmailAndPassword(email,pass);
+    p.then(()=>{closeModal();inPass.value='';}).catch(e=>{errEl.textContent=friendly(e.code)||e.message;});
+  }
+  function friendly(code){return({
+    'auth/invalid-email':'That email looks invalid.',
+    'auth/missing-password':'Enter a password.',
+    'auth/weak-password':'Password must be at least 6 characters.',
+    'auth/email-already-in-use':'That email already has an account — try LOG IN.',
+    'auth/invalid-credential':'Wrong email or password.',
+    'auth/wrong-password':'Wrong password.',
+    'auth/user-not-found':'No account for that email — try SIGN UP.',
+    'auth/network-request-failed':'Network error — check your connection.'
+  })[code];}
+
+  // merge local + cloud so neither device's progress is lost
+  function mergeSave(local,cloud){
+    const m=Object.assign({},SAVE_DEFAULT,local);
+    if(!cloud)return m;
+    const mx=(a,b)=>Math.max(a||0,b||0);
+    m.coins=mx(local.coins,cloud.coins);
+    m.kills=mx(local.kills,cloud.kills);
+    m.deaths=mx(local.deaths,cloud.deaths);
+    m.highestLevel=mx(local.highestLevel,cloud.highestLevel)||1;
+    m.gamesPlayed=mx(local.gamesPlayed,cloud.gamesPlayed);
+    m.bestScore=mx(local.bestScore,cloud.bestScore);
+    const uni=(a,b)=>Array.from(new Set([...(a||[]),...(b||[])]));
+    m.ownedHats=uni(local.ownedHats,cloud.ownedHats);
+    m.ownedOutfits=uni(local.ownedOutfits,cloud.ownedOutfits);
+    m.campaignDone=uni(local.campaignDone,cloud.campaignDone);
+    m.equippedHat=cloud.equippedHat||local.equippedHat||'none';
+    m.equippedOutfit=cloud.equippedOutfit||local.equippedOutfit||'default';
+    return m;
+  }
+
+  // wrap the game's writeSave so every local save also schedules a cloud push
+  const writeLocal=writeSave;
+  let pushTimer=null;
+  writeSave=function(){writeLocal();schedulePush();};
+  function schedulePush(){if(!auth.currentUser)return;setStatus('saving…','#ffd24a');clearTimeout(pushTimer);pushTimer=setTimeout(pushNow,1200);}
+  function pushNow(){
+    const u=auth.currentUser;if(!u)return Promise.resolve();
+    return db.collection('users').doc(u.uid).set({
+      save:saveData,highScore:highScore,
+      updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+    },{merge:true}).then(()=>setStatus('synced ✓','#2ecc71'))
+     .catch(e=>{setStatus('sync error','#ff7676');console.error(e);});
+  }
+
+  auth.onAuthStateChanged(async user=>{
+    if(user){
+      signInBtn.style.display='none';info.style.display='flex';
+      emailEl.textContent=user.email;setStatus('syncing…','#ffd24a');
+      try{
+        const snap=await db.collection('users').doc(user.uid).get();
+        const data=snap.exists?snap.data():null;
+        saveData=mergeSave(saveData,data&&data.save?data.save:null);
+        if(data&&typeof data.highScore==='number'&&data.highScore>highScore){
+          highScore=data.highScore;localStorage.setItem('dz_hs',highScore);
+        }
+        writeLocal();      // persist merged result locally
+        await pushNow();   // and mirror it back to the cloud
+      }catch(e){setStatus('sync error','#ff7676');console.error(e);}
+    }else{
+      signInBtn.style.display='block';info.style.display='none';
+    }
+  });
+
+  // only show the account widget on the menu; never over gameplay
+  (function syncVis(){
+    const onMenu=(typeof state!=='undefined'&&state===STATE.MENU);
+    acct.style.display=onMenu?'block':'none';
+    if(!onMenu)closeModal();
+    requestAnimationFrame(syncVis);
+  })();
+})();
 </script>
 </body>
 </html>
