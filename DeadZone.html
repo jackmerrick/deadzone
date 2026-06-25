@@ -2254,6 +2254,7 @@ function drawBriefing(dt){
 
 // ── Menu ───────────────────────────────────────────────────────────────────
 let menuAnim=0,menuTab='main',menuView='tiles'; // menuView: tiles | zombies | campaign
+let lockerTab='outfit'; // which category the Locker is showing: outfit | hat
 const MENU_TABS=['main','challenges','leaderboard','locker','store','stats'];
 const MENU_TAB_LABELS={main:'PLAY',challenges:'CHALLENGES',leaderboard:'LEADERS',locker:'LOCKER',store:'STORE',stats:'STATS'};
 // Clickable regions are rebuilt every menu frame; the click handler walks them.
@@ -2320,8 +2321,14 @@ function drawMenu(){
   const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,C.BG0);bg.addColorStop(1,C.BG1);ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
   const vg=ctx.createRadialGradient(W/2,H*0.42,0,W/2,H*0.42,Math.max(W,H)*0.7);vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(0,0,0,0.55)');ctx.fillStyle=vg;ctx.fillRect(0,0,W,H);
   for(let i=0;i<36;i++){const x=((i*141.3+menuAnim*12)%W),y=((i*99.7+menuAnim*6)%H);ctx.fillStyle=`rgba(220,40,50,${0.025+Math.sin(menuAnim*1.2+i)*0.02})`;ctx.beginPath();ctx.arc(x,y,1.0,0,Math.PI*2);ctx.fill();}
-  // Title
-  ctx.shadowColor=C.ACCENT;ctx.shadowBlur=30;ctx.fillStyle=C.ACCENT;ctx.font=mFont(58,'bold');ctx.textAlign='center';ctx.fillText('DEAD ZONE',W/2,82);ctx.shadowBlur=0;
+  // Title — white "DEAD" + gold "ZONE" with a red glow and a gold underline accent
+  ctx.font=mFont(58,'bold');
+  const t1='DEAD ',t2='ZONE',w1=ctx.measureText(t1).width,w2=ctx.measureText(t2).width,sx=W/2-(w1+w2)/2;
+  ctx.textAlign='left';ctx.shadowBlur=26;
+  ctx.shadowColor=C.ACCENT;ctx.fillStyle=C.TEXT;ctx.fillText(t1,sx,82);
+  ctx.shadowColor=C.GOLD;ctx.fillStyle=C.GOLD;ctx.fillText(t2,sx+w1,82);
+  ctx.shadowBlur=0;ctx.textAlign='center';
+  const uw=w1+w2-12;fillRR(W/2-uw/2,96,uw,3,2,C.GOLD);
   // Coin balance (top-right)
   panel(W-214,18,194,36,{r:8,border:C.GOLD});
   ctx.fillStyle=C.GOLD;ctx.font=mFont(15,'bold');ctx.textAlign='right';ctx.textBaseline='middle';ctx.fillText(`🪙 ${saveData.coins} coins`,W-32,37);ctx.textBaseline='alphabetic';
@@ -2366,7 +2373,7 @@ function drawBigTile(x,y,w,h,title,sub,desc,accent,bg,fn){
 
 function drawModeTiles(){
   const r=rankFor(saveData.kills);
-  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(14);ctx.textAlign='center';ctx.fillText('CHOOSE YOUR OPERATION',W/2,190);
+  ctx.fillStyle=C.GOLD;ctx.font=mFont(14,'bold');ctx.textAlign='center';ctx.fillText('CHOOSE YOUR OPERATION',W/2,190);
   ctx.fillStyle=r.color;ctx.font=mFont(12,'bold');ctx.fillText(`RANK: ${r.name.toUpperCase()}  ·  ${saveData.kills} KILLS  ·  🪙 ${saveData.coins}`,W/2,214);
   const done=saveData.campaignDone.length,total=CAMPAIGN.flatMap(c=>c.missions).length;
   const tw=Math.min(320,(W-140)/2),th=250,g=40,totalW=tw*2+g,x0=W/2-totalW/2,ty=250;
@@ -2593,13 +2600,20 @@ function drawCosmeticGrid(title,kind,items,owned,equippedId,topY,mode){
 }
 
 function drawLocker(){
-  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(12);ctx.textAlign='center';ctx.fillText('Equip cosmetics you own. Locked items take you to the STORE.',W/2,176);
-  // Big preview
-  drawCharacterPreview(W/2,236,30,getOutfit(),getHat());
-  let y=300;
-  y=drawCosmeticGrid('HATS',  'hat',   HATS,   saveData.ownedHats,   saveData.equippedHat,   y,'locker');
-  y+=8;
-  drawCosmeticGrid('OUTFITS','outfit',OUTFITS,saveData.ownedOutfits,saveData.equippedOutfit,y,'locker');
+  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(12);ctx.textAlign='center';ctx.fillText('Equip the cosmetics you own. Buy more in the STORE.',W/2,176);
+  // Big preview of the equipped character
+  drawCharacterPreview(W/2,228,30,getOutfit(),getHat());
+  // Two category tiles
+  const tw=190,th=46,gap=18,total=tw*2+gap,x0=W/2-total/2,ty=272;
+  mButton(x0,ty,tw,th,'OUTFITS',{id:'lk_outfit',active:lockerTab==='outfit',activeFill:C.GOLD,activeBorder:C.GOLD,activeFg:'#1a1500',glow:lockerTab==='outfit'?C.GOLD:C.BORDER_HI,fs:15,r:10,action:()=>lockerTab='outfit'});
+  mButton(x0+tw+gap,ty,tw,th,'HATS',{id:'lk_hat',active:lockerTab==='hat',activeFill:C.GOLD,activeBorder:C.GOLD,activeFg:'#1a1500',glow:lockerTab==='hat'?C.GOLD:C.BORDER_HI,fs:15,r:10,action:()=>lockerTab='hat'});
+  // Owned-only grid for the selected category
+  const y=348;
+  if(lockerTab==='hat'){
+    drawCosmeticGrid('',  'hat',   HATS.filter(h=>saveData.ownedHats.includes(h.id)),      saveData.ownedHats,   saveData.equippedHat,   y,'locker');
+  } else {
+    drawCosmeticGrid('','outfit', OUTFITS.filter(o=>saveData.ownedOutfits.includes(o.id)), saveData.ownedOutfits,saveData.equippedOutfit,y,'locker');
+  }
 }
 
 function drawMenuShop(){
