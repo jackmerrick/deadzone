@@ -3561,19 +3561,28 @@ requestAnimationFrame(loop);
     document.dispatchEvent(new KeyboardEvent('keydown',{key:k}));
     document.dispatchEvent(new KeyboardEvent('keyup',{key:k}));
   }
+  const allBtns=[]; // each button declares which game modes it applies to
   function button(d,parent){
     const b=mk('div',null,'<b>'+d.ic+'</b>'+d.lbl);b.className='mzBtn';
     b.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();b.style.opacity=.6;pressKey(d.key);},{passive:false});
     b.addEventListener('touchend',e=>{e.preventDefault();b.style.opacity=1;},{passive:false});
-    parent.appendChild(b);
+    b._modes=d.modes;parent.appendChild(b);allBtns.push(b);
   }
+  const Z='zombies',CMP='campaign',MP='mp';
 
   const actions=mk('div','mzActions');actions.className='mzRow';
-  [{ic:'✋',lbl:'USE',key:'Enter'},{ic:'💣',lbl:'NADE',key:'g'},{ic:'🔁',lbl:'SWAP',key:'y'},{ic:'🔄',lbl:'RELOAD',key:'r'},{ic:'🔧',lbl:'DEPLOY',key:'f'}].forEach(d=>button(d,actions));
+  [{ic:'✋',lbl:'USE',key:'Enter',modes:[Z,CMP]},
+   {ic:'💣',lbl:'NADE',key:'g',modes:[Z,MP]},
+   {ic:'🔁',lbl:'SWAP',key:'y',modes:[Z,CMP,MP]},
+   {ic:'🔄',lbl:'RELOAD',key:'r',modes:[MP]},
+   {ic:'🔧',lbl:'DEPLOY',key:'f',modes:[Z]}].forEach(d=>button(d,actions));
   document.body.appendChild(actions);
 
   const util=mk('div','mzUtil');util.className='mzRow';
-  [{ic:'🗺',lbl:'MAP',key:'m'},{ic:'🔨',lbl:'BUILD',key:'b'},{ic:'⚡',lbl:'STREAK',key:'e'},{ic:'⏸',lbl:'',key:'Escape'}].forEach(d=>button(d,util));
+  [{ic:'🗺',lbl:'MAP',key:'m',modes:[Z]},
+   {ic:'🔨',lbl:'BUILD',key:'b',modes:[Z]},
+   {ic:'⚡',lbl:'STREAK',key:'e',modes:[Z]},
+   {ic:'⏸',lbl:'',key:'Escape',modes:[Z,CMP,MP]}].forEach(d=>button(d,util));
   document.body.appendChild(util);
 
   const closeBtn=mk('div','mzClose','✕');
@@ -3626,6 +3635,8 @@ requestAnimationFrame(loop);
   // ── surface the right controls for the current screen ──
   (function sync(){
     const playing=state===STATE.PLAYING,open=uiOpen();
+    const gm=(typeof gameMode!=='undefined')?gameMode:Z;
+    allBtns.forEach(b=>{b.style.display=b._modes.includes(gm)?'':'none';}); // hide buttons that don't apply to this mode
     actions.style.display=freePlay()?'flex':'none';
     util.style.display=(playing&&!open)?'flex':'none';
     closeBtn.style.display=((playing&&open)||state===STATE.PAUSED)?'flex':'none';
