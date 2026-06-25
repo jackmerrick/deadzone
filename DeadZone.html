@@ -102,8 +102,20 @@ if(document.fonts&&document.fonts.load){document.fonts.load("700 60px 'JetBrains
 const fogCanvas=document.createElement('canvas');
 fogCanvas.width=W;fogCanvas.height=H;
 const fogCtx=fogCanvas.getContext('2d');
-function resizeCanvas(){W=window.innerWidth;H=window.innerHeight;canvas.width=W;canvas.height=H;fogCanvas.width=W;fogCanvas.height=H;}
+const MOBILE=('ontouchstart' in window)||navigator.maxTouchPoints>0;
+const UI_MIN_H=660; // mobile: render at >=this logical height so menus/HUD fit, then CSS scales it to the real screen
+function resizeCanvas(){
+  const vw=window.innerWidth,vh=window.innerHeight;
+  if(MOBILE&&vh<UI_MIN_H){
+    W=Math.round(vw*UI_MIN_H/vh);H=UI_MIN_H;          // scale logical resolution up (aspect ratio preserved)
+    canvas.style.width=vw+'px';canvas.style.height=vh+'px'; // ...but display it at the real screen size
+  }else{
+    W=vw;H=vh;canvas.style.width='';canvas.style.height='';
+  }
+  canvas.width=W;canvas.height=H;fogCanvas.width=W;fogCanvas.height=H;
+}
 window.addEventListener('resize',resizeCanvas);
+resizeCanvas(); // apply once on load (sets the mobile virtual resolution if needed)
 
 const STATE={MENU:'menu',PLAYING:'playing',GAME_OVER:'gameOver',WIN:'win',PAUSED:'paused',BRIEFING:'briefing'};
 const MAPS=[
