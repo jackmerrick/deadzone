@@ -148,6 +148,7 @@ let campaignMode=true;   // true = chain MAPS[0..3]; false = stay on one map for
 let fixedMapIdx=0;       // map used in single-map mode
 let gameMode='zombies';  // 'zombies' = wave survival, 'campaign' = stealth extraction
 let mission=null;        // active stealth mission def (campaign mode)
+let startCountdown=0;     // >0 freezes play and shows a "get ready" countdown (zombies + multiplayer)
 let score=0,currency=0;
 let highScore=parseInt(localStorage.getItem('dz_hs')||'0');
 
@@ -170,7 +171,9 @@ const SAVE_DEFAULT={
   campaignDone:[],  // ids of completed stealth missions
   username:'',      // chosen public name for the leaderboard
   // daily/weekly challenge tracking (see CHALLENGE section below)
-  challenges:{ dailyKey:0, weeklyKey:0, progress:{}, claimed:{} }
+  challenges:{ dailyKey:0, weeklyKey:0, progress:{}, claimed:{} },
+  // multiplayer career stats (kept separate from zombies)
+  mp:{ kills:0, deaths:0, points:0, matches:0, wins:0, best:{kills:0,deaths:0,points:0} }
 };
 let saveData=loadSave();
 function loadSave(){
@@ -181,6 +184,8 @@ function loadSave(){
   const c=s.challenges||{};
   s.challenges={dailyKey:c.dailyKey||0, weeklyKey:c.weeklyKey||0, progress:Object.assign({},c.progress), claimed:Object.assign({},c.claimed)};
   if(typeof s.username!=='string')s.username='';
+  const mp=s.mp||{},mb=mp.best||{};
+  s.mp={kills:mp.kills||0,deaths:mp.deaths||0,points:mp.points||0,matches:mp.matches||0,wins:mp.wins||0,best:{kills:mb.kills||0,deaths:mb.deaths||0,points:mb.points||0}};
   return s;
 }
 function writeSave(){try{localStorage.setItem('dz_save',JSON.stringify(saveData));}catch(e){}}
@@ -441,6 +446,7 @@ document.addEventListener('keydown',e=>{
     if(e.key==='q'||e.key==='Q')player.selectedGrenade=player.selectedGrenade==='frag'?'flashbang':'frag';
     if(e.key==='r'||e.key==='R')mpStartReload();
     if(e.key==='y'||e.key==='Y')cycleWeapon();
+    if(e.key==='5'&&playerDownT<=0){player.hp=0;mpPlayerDown();} // suicide → respawn
   }return;}
 
   if(state===STATE.PLAYING){
@@ -749,7 +755,7 @@ function shoot(){
     }
     lastShot=now;
     if(player.weapon==='rifle')player.mag--;
-    for(let i=0;i<w.pellets;i++){const a=player.angle+rand(-w.spread,w.spread);bullets.push({x:player.x,y:player.y,vx:Math.cos(a)*w.spd,vy:Math.sin(a)*w.spd,dmg:w.dmg,life:w.life||1.6,color:w.color,fromPlayer:true,team:'blue',br:w.br});}
+    for(let i=0;i<w.pellets;i++){const a=player.angle+rand(-w.spread,w.spread);bullets.push({x:player.x,y:player.y,vx:Math.cos(a)*w.spd,vy:Math.sin(a)*w.spd,dmg:w.dmg,life:w.life||1.6,color:w.color,fromPlayer:true,team:'blue',owner:'me',br:w.br});}
     spawnMuzzle(player.x+Math.cos(player.angle)*22,player.y+Math.sin(player.angle)*22,player.angle);addShake(3.5,0.1);
     if(player.weapon==='rifle'&&player.mag<=0)mpStartReload();
     return;
@@ -814,7 +820,7 @@ function explodeGrenade(g){
   if(gameMode==='mp'){ // grenades only thrown by the player (BLUE) → affect RED bots
     if(g.type==='flashbang'){spawnExplosion(g.x,g.y,8);for(const o of bots){if(o.alive&&o.team==='red'&&Math.hypot(o.x-g.x,o.y-g.y)<240)o.stun=Math.max(o.stun||0,3.5);}return;}
     spawnExplosion(g.x,g.y,16);addShake(11,0.35);
-    for(const o of bots){if(!o.alive||o.team!=='red')continue;const d=Math.hypot(o.x-g.x,o.y-g.y);if(d<160){o.hp-=120*(1-d/160);o.dmgT=0;if(o.hp<=0)mpKill({fromPlayer:true,team:'blue'},o);}}
+    for(const o of bots){if(!o.alive||o.team!=='red')continue;const d=Math.hypot(o.x-g.x,o.y-g.y);if(d<160){o.hp-=120*(1-d/160);o.dmgT=0;if(o.hp<=0)mpKill('me',o);}}
     return;
   }
   if(g.type==='frag'){explodeAt(g.x,g.y,155,300,13);}
@@ -1761,6 +1767,7 @@ function startGame(mapIdx){
   newLightsBlock();
   initPlayer();
   gameStartTime=performance.now()/1000;
+  startCountdown=5;
   state=STATE.PLAYING;
   addNotif(`DEAD ZONE — Level 1/20${campaignMode?'':' · '+MAPS[fixedMapIdx].name}`,'#e63946',3);
   addNotif('Buy weapons from 🧺 shop  ·  Upgrade at 🔧 workshop','#2ecc71',5);
@@ -2535,6 +2542,30 @@ function drawModeTiles(){
   drawBigTile(x0+tw+g,      ty,tw,th,'ZOMBIES',   'WAVE SURVIVAL','20 levels · 5 maps',                 '#e63946','#1a0808',()=>{menuView='zombies';});
   drawBigTile(x0+(tw+g)*2,  ty,tw,th,'MULTIPLAYER','BOT PvP',     '4v4 · objective modes',              '#ffd24a','#1a1508',()=>{menuView='multiplayer';});
 }
+function drawMiniChallenge(x,y,w,h,ch){
+  const c=saveData.challenges,prog=Math.min(c.progress[ch.id]||0,ch.target),done=!!c.claimed[ch.id];
+  panel(x,y,w,h,{r:6,top:done?'#10301f':C.PANEL_HI,bottom:done?'#0a2014':C.PANEL,border:done?C.GREEN:C.BORDER});
+  ctx.fillStyle=DIFF_COLOR[ch.diff];ctx.fillRect(x,y,4,h);
+  ctx.textAlign='left';ctx.fillStyle=C.TEXT;ctx.font=mFont(10);let lbl=ch.label;if(lbl.length>26)lbl=lbl.slice(0,25)+'…';ctx.fillText(lbl,x+11,y+16);
+  ctx.textAlign='right';ctx.fillStyle=done?C.GREEN:C.GOLD;ctx.font=mFont(9,'bold');ctx.fillText(done?'✓ DONE':('🪙 '+ch.reward),x+w-8,y+16);
+  const bx=x+11,by=y+h-14,bw=w-22,bh=7,r=ch.target?prog/ch.target:0;
+  fillRR(bx,by,bw,bh,3,'#222');fillRR(bx,by,bw*r,bh,3,done?C.GREEN:C.GOLD);
+  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(9);ctx.textAlign='right';ctx.fillText(prog+' / '+ch.target,x+w-8,y+h-4);
+}
+function drawMenuChallenges(y0){
+  syncChallengePeriods();
+  const ac=activeChallenges();
+  const tw=Math.min(860,W-100),tx=W/2-tw/2;let y=y0;
+  ctx.fillStyle=C.GOLD;ctx.font=mFont(13,'bold');ctx.textAlign='center';ctx.fillText('CHALLENGES',W/2,y);y+=14;
+  const drawRow=(label,list)=>{
+    ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(10,'bold');ctx.textAlign='left';ctx.fillText(label,tx,y+10);y+=16;
+    const n=list.length,g=14,cw=(tw-(n-1)*g)/n;
+    list.forEach((ch,i)=>drawMiniChallenge(tx+i*(cw+g),y,cw,46,ch));
+    y+=58;
+  };
+  drawRow('DAILY',ac.daily.list);
+  drawRow('WEEKLY',ac.weekly.list);
+}
 function drawMultiplayerSelect(){
   backButton();
   ctx.fillStyle=C.GOLD;ctx.shadowColor=C.GOLD;ctx.shadowBlur=14;ctx.font=mFont(24,'bold');ctx.textAlign='center';ctx.fillText('MULTIPLAYER',W/2,176);ctx.shadowBlur=0;
@@ -2614,23 +2645,36 @@ function drawZombiesMenu(){
   drawCharacterPreview(W/2,py,24,getOutfit(),getHat());
 }
 
+function drawStatPanel(x,y,w,title,color,rows){
+  const rh=28,h=54+rows.length*rh;
+  panel(x,y,w,h,{r:10,border:color});
+  ctx.textAlign='left';ctx.fillStyle=color;ctx.font=mFont(16,'bold');ctx.fillText(title,x+18,y+28);
+  let ry=y+56;
+  rows.forEach(([label,val])=>{
+    const head=val==='';
+    ctx.font=mFont(head?11:13,head?'bold':null);ctx.textAlign='left';ctx.fillStyle=head?color:C.TEXT_DIM;ctx.fillText(label,x+18,ry);
+    if(!head){ctx.textAlign='right';ctx.fillStyle=C.TEXT;ctx.font=mFont(14,'bold');ctx.fillText(String(val),x+w-18,ry);}
+    ry+=rh;
+  });
+}
 function drawStats(){
-  const r=rankFor(saveData.kills),nr=nextRank(saveData.kills),cx=W/2,y0=200;
-  ctx.fillStyle=r.color;ctx.shadowColor=r.color;ctx.shadowBlur=18;ctx.font=mFont(30,'bold');ctx.textAlign='center';
+  const r=rankFor(saveData.kills),nr=nextRank(saveData.kills),cx=W/2,y0=194;
+  ctx.fillStyle=r.color;ctx.shadowColor=r.color;ctx.shadowBlur=18;ctx.font=mFont(28,'bold');ctx.textAlign='center';
   ctx.fillText(`RANK: ${r.name.toUpperCase()}`,cx,y0);ctx.shadowBlur=0;
   if(nr){
-    const prog=clamp((saveData.kills-r.kills)/(nr.kills-r.kills),0,1),bw=380,bx=cx-bw/2,by=y0+16;
-    fillRR(bx,by,bw,12,3,'#222');fillRR(bx,by,bw*prog,12,3,r.color);
-    ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(10);ctx.fillText(`${saveData.kills} / ${nr.kills} kills to ${nr.name}`,cx,by+28);
-  } else {ctx.fillStyle=C.GOLD;ctx.font=mFont(11);ctx.fillText('★ MAX RANK ACHIEVED ★',cx,y0+30);}
-  const stats=[['ZOMBIES KILLED',saveData.kills],['DEATHS',saveData.deaths],['HIGHEST LEVEL',saveData.highestLevel+' / 20'],['GAMES PLAYED',saveData.gamesPlayed],['BEST SCORE',saveData.bestScore],['COINS',saveData.coins]];
-  const cols=3,cardW=210,cardH=78,g=18,gridW=cols*cardW+(cols-1)*g,gx=cx-gridW/2,gy=y0+58;
-  stats.forEach((s,i)=>{
-    const col=i%cols,row=Math.floor(i/cols),x=gx+col*(cardW+g),yy=gy+row*(cardH+g);
-    panel(x,yy,cardW,cardH,{r:8});
-    ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(10);ctx.textAlign='center';ctx.fillText(s[0],x+cardW/2,yy+24);
-    ctx.fillStyle=C.TEXT;ctx.font=mFont(26,'bold');ctx.fillText(String(s[1]),x+cardW/2,yy+58);
-  });
+    const prog=clamp((saveData.kills-r.kills)/(nr.kills-r.kills),0,1),bw=360,bx=cx-bw/2,by=y0+14;
+    fillRR(bx,by,bw,10,3,'#222');fillRR(bx,by,bw*prog,10,3,r.color);
+    ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(10);ctx.fillText(`${saveData.kills} / ${nr.kills} kills to ${nr.name}  ·  zombies`,cx,by+24);
+  } else {ctx.fillStyle=C.GOLD;ctx.font=mFont(11);ctx.fillText('★ MAX RANK ACHIEVED ★',cx,y0+26);}
+  const mp=saveData.mp,kd=((mp.kills||0)/Math.max(1,mp.deaths||0)).toFixed(2);
+  const pw=Math.min(380,(W-120)/2),gap=40,ly=y0+58,lx=cx-pw-gap/2,rx=cx+gap/2;
+  drawStatPanel(lx,ly,pw,'ZOMBIES','#e63946',[
+    ['Zombies killed',saveData.kills],['Deaths',saveData.deaths],['Highest level',saveData.highestLevel+' / 20'],
+    ['Games played',saveData.gamesPlayed],['Best score',saveData.bestScore],['Coins',saveData.coins]]);
+  drawStatPanel(rx,ly,pw,'MULTIPLAYER','#3fa9ff',[
+    ['Kills',mp.kills],['Deaths',mp.deaths],['Points',mp.points],['K/D ratio',kd],
+    ['Matches',mp.matches],['Wins',mp.wins||0],
+    ['BEST MATCH',''],['Kills',mp.best.kills],['Deaths',mp.best.deaths],['Points',mp.best.points]]);
 }
 
 // ── Challenges tab ───────────────────────────────────────────────────────────
@@ -2813,7 +2857,41 @@ function drawGameOver(){
   drawOverlay('GAME OVER','#e63946',[{text:`SCORE: ${score}`,col:'#fff',font:'bold 22px Courier New'},{text:`BEST: ${highScore}`,col:'#ffdd00',font:'16px Courier New'},{text:`Level ${globalLevel}/20  ·  £${currency}`,col:'#666',font:'12px Courier New'}],{label:'RETRY',col:'#8a1010',hov:'#e63946',border:'#e63946'},{label:'MENU',col:'#111',hov:'#333'});}
 function drawWin(){drawOverlay('YOU WIN!','#2ecc71',[{text:'ALL 20 LEVELS CLEARED!',col:'#888',font:'15px Courier New'},{text:`SCORE: ${score}`,col:'#fff',font:'bold 22px Courier New'},{text:score>=highScore?'NEW HIGH SCORE!':'Best: '+highScore,col:'#ffdd00',font:'16px Courier New'}],{label:'PLAY AGAIN',col:'#1a5a2a',hov:'#2ecc71',border:'#2ecc71'},{label:'MENU',col:'#111',hov:'#333'});}
 const PAUSE_QUIT={w:170,h:42,get x(){return W-this.w-20;},y:20};
+function drawTeamTable(title,color,members,x,y,w){
+  const rh=30;
+  ctx.textAlign='left';ctx.fillStyle=color;ctx.font=mFont(18,'bold');ctx.fillText(title,x,y);y+=24;
+  ctx.fillStyle='rgba(255,255,255,0.08)';ctx.fillRect(x,y-4,w,26);
+  ctx.font=mFont(13,'bold');ctx.fillStyle='#9aa0a6';
+  ctx.textAlign='left';ctx.fillText('NAME',x+12,y+15);
+  ctx.textAlign='right';ctx.fillText('K',x+w*0.52,y+15);ctx.fillText('D',x+w*0.64,y+15);ctx.fillText('PTS',x+w*0.82,y+15);ctx.fillText('K/D',x+w-12,y+15);
+  y+=30;
+  members=members.slice().sort((a,b)=>(b.points||0)-(a.points||0));
+  members.forEach((m,i)=>{
+    const me=(m===mpMe),kd=((m.kills||0)/Math.max(1,m.deaths||0)).toFixed(2);
+    ctx.fillStyle=me?'rgba(63,169,255,0.18)':(i%2?'rgba(255,255,255,0.04)':'rgba(0,0,0,0)');ctx.fillRect(x,y-4,w,rh-4);
+    ctx.font=mFont(16);ctx.textAlign='left';ctx.fillStyle=me?'#bfe6ff':'#eee';ctx.fillText((m.name||'?')+(me?' (you)':''),x+12,y+18);
+    ctx.textAlign='right';ctx.fillStyle='#ddd';ctx.font=mFont(16);ctx.fillText(String(m.kills||0),x+w*0.52,y+18);ctx.fillText(String(m.deaths||0),x+w*0.64,y+18);
+    ctx.fillStyle='#ffd24a';ctx.font=mFont(16,'bold');ctx.fillText(String(m.points||0),x+w*0.82,y+18);
+    ctx.fillStyle='#ddd';ctx.font=mFont(16);ctx.fillText(kd,x+w-12,y+18);
+    y+=rh;
+  });
+  return y;
+}
+function drawMpScoreboard(){
+  ctx.fillStyle='rgba(0,0,0,0.94)';ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';ctx.fillStyle='#fff';ctx.font=mFont(34,'bold');ctx.fillText('SCOREBOARD',W/2,58);
+  ctx.fillStyle='#9aa0a6';ctx.font=mFont(13);ctx.fillText(MP_MODES[mpMode].name+'   ·   BLUE '+mpScore.blue+' — '+mpScore.red+' RED   ·   first to '+mpScoreLimit,W/2,82);
+  const tw=Math.min(860,W-100),tx=W/2-tw/2;let y=112;
+  y=drawTeamTable('YOUR TEAM (BLUE)',MP_BLUE,[mpMe].concat(bots.filter(b=>b.team==='blue')),tx,y,tw)+20;
+  y=drawTeamTable('ENEMY TEAM (RED)',MP_RED,bots.filter(b=>b.team==='red'),tx,y,tw)+10;
+  drawMenuChallenges(y+8);
+  ctx.fillStyle='#888';ctx.font=mFont(12);ctx.textAlign='center';ctx.fillText('ESC to resume',W/2,H-20);
+  const b=PAUSE_QUIT,hov=mHov(b.x,b.y,b.w,b.h);
+  ctx.fillStyle=hov?'#7a1010':'#3a0808';ctx.fillRect(b.x,b.y,b.w,b.h);ctx.strokeStyle='#e63946';ctx.lineWidth=2;ctx.strokeRect(b.x,b.y,b.w,b.h);
+  ctx.fillStyle='#fff';ctx.font=mFont(14,'bold');ctx.textAlign='center';ctx.fillText('QUIT TO MENU',b.x+b.w/2,b.y+26);
+}
 function drawPaused(){
+  if(gameMode==='mp'){drawMpScoreboard();return;}
   ctx.fillStyle='rgba(0,0,0,0.8)';ctx.fillRect(0,0,W,H);
   ctx.fillStyle='#fff';ctx.font='bold 50px Courier New';ctx.textAlign='center';ctx.fillText('PAUSED',W/2,H/2-10);
   ctx.fillStyle='#555';ctx.font='14px Courier New';ctx.fillText('ESC to resume',W/2,H/2+30);
@@ -2834,7 +2912,7 @@ function handleClick(e){
   if(state===STATE.PLAYING&&airstrikePending){const camX=player.x-W/2,camY=player.y-H/2;callAirstrike(mx+camX,my+camY);airstrikePending=false;return;}
   if(state===STATE.MENU){for(const reg of menuRegions){if(mx>reg.x&&mx<reg.x+reg.w&&my>reg.y&&my<reg.y+reg.h){reg.action();break;}}}
   else if(state===STATE.BRIEFING){if(briefRegion&&mx>briefRegion.x&&mx<briefRegion.x+briefRegion.w&&my>briefRegion.y&&my<briefRegion.y+briefRegion.h)beginMissionPlay();}
-  else if(state===STATE.PAUSED){const b=PAUSE_QUIT;if(mx>b.x&&mx<b.x+b.w&&my>b.y&&my<b.y+b.h){commitRun(false);toMenu(returnView());}}
+  else if(state===STATE.PAUSED){const b=PAUSE_QUIT;if(mx>b.x&&mx<b.x+b.w&&my>b.y&&my<b.y+b.h){if(gameMode==='mp')mpCommitStats(false,0);else commitRun(false);toMenu(returnView());}}
   else if(state===STATE.GAME_OVER){const by=H/2+80;if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44)restartGame();if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44)toMenu(returnView());}
   else if(state===STATE.WIN){const by=H/2+80;
     if(gameMode==='mp'){
@@ -2867,6 +2945,8 @@ let bots=[], mpMode='tdm', mpTheme=0, mpTimer=600, mpScoreLimit=50, mpEnded=fals
 let mpScore={blue:0,red:0}, mpAcc={blue:0,red:0};
 let mpZones=[], mpHill=null, mpHillPts=[], mpHillIdx=0, mpHillT=0, mpFlags=null;
 let blueSpawn=null, redSpawn=null, playerDownT=0;
+let mpMe={name:'YOU',team:'blue',kills:0,deaths:0,points:0}; // the player's own scoreboard line
+let mpCommitted=false; // guards against folding match stats into saveData twice
 
 function buildArena(themeIdx){
   mapCfg=MAPS[themeIdx];worldMap=blankMap();coverTiles=new Set();
@@ -2928,16 +3008,21 @@ function mpSpawnPos(team){
   }
   return best||{x:tcx(Math.floor(MAP_W/2)),y:tcx(Math.floor(MAP_H/2))};
 }
-function makeBot(team){const s=mpSpawnPos(team);return {x:s.x,y:s.y,hp:100,maxHp:100,angle:0,team,alive:true,respawnT:0,fireCd:rand(0,1),spd:rand(150,175),role:'',carryFlag:null,stuckT:0};}
-function spawnBots(){bots=[];for(let i=0;i<3;i++)bots.push(makeBot('blue'));for(let i=0;i<4;i++)bots.push(makeBot('red'));if(mpMode==='ctf')bots.forEach((b,i)=>b.role=(i%2===0)?'attack':'defend');}
+function makeBot(team){const s=mpSpawnPos(team);return {x:s.x,y:s.y,hp:100,maxHp:100,angle:0,team,alive:true,respawnT:0,fireCd:rand(0,1),spd:rand(150,180),role:'',carryFlag:null,stuckT:0,detourT:0,ox:rand(-46,46),oy:rand(-46,46),name:'',kills:0,deaths:0,points:0};}
+function spawnBots(){
+  bots=[];
+  for(let i=0;i<3;i++){const b=makeBot('blue');b.name='T'+(i+1);bots.push(b);}   // T1..T3 = teammates
+  for(let i=0;i<4;i++){const b=makeBot('red'); b.name='E'+(i+1);bots.push(b);}   // E1..E4 = enemies
+  if(mpMode==='ctf')bots.forEach((b,i)=>b.role=(i%2===0)?'attack':'defend');
+}
 function respawnBot(b){const s=mpSpawnPos(b.team);b.alive=true;b.hp=b.maxHp;b.x=s.x;b.y=s.y;b.respawnT=0;b.carryFlag=null;}
 
-function mpPlayerDown(){if(playerDownT>0)return;playerDownT=MP_RESPAWN;if(mpMode==='tdm')mpScore.red++;mpFlagDropFrom(player);addShake(12,0.4);addNotif('You were killed — respawning…','#ff8585',3);}
+function mpPlayerDown(){if(playerDownT>0)return;playerDownT=MP_RESPAWN;mpMe.deaths++;if(mpMode==='tdm')mpScore.red++;mpFlagDropFrom(player);addShake(12,0.4);addNotif('You were killed — respawning…','#ff8585',3);}
 function mpRespawnPlayer(){const s=mpSpawnPos('blue');player.hp=player.maxHp;player.x=s.x;player.y=s.y;player.invincible=2;player.lastStand=false;player.dmgT=99;player.mag=player.magMax;player.reloadT=0;playerDownT=0;}
 function mpStartReload(){if(player.reloadT>0||player.mag>=player.magMax)return;player.reloadT=1.4;addNotif('Reloading…','#9aa0a6',1);}
 function mpMelee(w){ // knife = one-shot kill
   const range=(w.range||54)+16,arc=w.arc||1.0;
-  for(const o of bots){if(!o.alive||o.team==='blue')continue;if(dist(player,o)>range)continue;if(Math.abs(angDiff(Math.atan2(o.y-player.y,o.x-player.x),player.angle))>arc)continue;spawnBlood(o.x,o.y,16);mpKill({fromPlayer:true,team:'blue'},o);break;}
+  for(const o of bots){if(!o.alive||o.team==='blue')continue;if(dist(player,o)>range)continue;if(Math.abs(angDiff(Math.atan2(o.y-player.y,o.x-player.x),player.angle))>arc)continue;spawnBlood(o.x,o.y,16);mpKill('me',o);break;}
   for(let i=0;i<7;i++){const a=player.angle+rand(-arc,arc),s=rand(3,7);particles.push({x:player.x+Math.cos(a)*range*0.6,y:player.y+Math.sin(a)*range*0.6,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:0.18,maxLife:0.18,r:rand(2,4),color:'#e8e8f0'});}
   addShake(3,0.08);
 }
@@ -2970,6 +3055,24 @@ function mpRoamPoint(b,center){
     if(tx>0&&ty>0&&tx<MAP_W-1&&ty<MAP_H-1&&worldMap[ty][tx]===0)return {x:tcx(tx),y:tcx(ty)};}
   return {x:b.x+rand(-150,150),y:b.y+rand(-150,150)};
 }
+// Steer a bot toward (gx,gy): blends in separation from nearby allies + a detour when wedged on a wall
+function mpSteer(b,gx,gy,spd,dt){
+  let dirx=gx-b.x,diry=gy-b.y;const dl=Math.hypot(dirx,diry)||1;dirx/=dl;diry/=dl;
+  // separation: push away from same-team bots that are too close (stops clumping/following)
+  let sx=0,sy=0;
+  for(const o of bots){if(o===b||!o.alive||o.team!==b.team)continue;const dx=b.x-o.x,dy=b.y-o.y,d=Math.hypot(dx,dy);if(d>0.01&&d<54){sx+=dx/d*(54-d);sy+=dy/d*(54-d);}}
+  dirx+=sx*0.018;diry+=sy*0.018;
+  // active detour when stuck (route around the obstacle for a moment)
+  if(b.detourT>0){b.detourT-=dt;dirx=Math.cos(b.detourA);diry=Math.sin(b.detourA);}
+  const nl=Math.hypot(dirx,diry)||1;dirx/=nl;diry/=nl;
+  const px=b.x,py=b.y;
+  moveToward(b,b.x+dirx*60,b.y+diry*60,spd,dt);
+  if(Math.hypot(b.x-px,b.y-py)<spd*dt*0.35){ // barely moved → wedged
+    b.stuckT=(b.stuckT||0)+dt;
+    if(b.stuckT>0.4){b.detourT=0.7;b.detourA=Math.atan2(diry,dirx)+(Math.random()<0.5?1:-1)*(Math.PI/2+rand(-0.5,0.5));b.stuckT=0;b.wx=undefined;}
+  } else b.stuckT=0;
+  return Math.atan2(diry,dirx);
+}
 function updateBots(dt){
   for(const b of bots){
     if(!b.alive){b.respawnT-=dt;if(b.respawnT<=0)respawnBot(b);continue;}
@@ -2977,21 +3080,23 @@ function updateBots(dt){
     if(b.stun>0){b.stun-=dt;continue;}                                                  // flashbanged: frozen
     const e=mpNearestEnemy(b);
     let goal=mpBotGoal(b);
-    if(!goal){ // roam: pick a wander point and keep moving so they never look frozen
+    if(!goal){ // roam: each bot picks its own wander point so they don't follow one another
       b.wt=(b.wt||0)-dt;
       if(b.wx===undefined||b.wt<=0||Math.hypot(b.wx-b.x,b.wy-b.y)<44){const rp=mpRoamPoint(b,b.roamC);b.wx=rp.x;b.wy=rp.y;b.wt=rand(2.5,5);}
       goal={x:b.wx,y:b.wy};
-    }
+    } else {goal={x:goal.x+(b.ox||0),y:goal.y+(b.oy||0)};} // personal offset so they spread around the point
     if(e.tgt&&e.d<520&&losClear(b.x,b.y,e.tgt.x,e.tgt.y)){
-      b.angle=Math.atan2(e.tgt.y-b.y,e.tgt.x-b.x);
-      if(e.d>210)moveToward(b,e.tgt.x,e.tgt.y,b.spd,dt);
-      else if(e.d<120)moveToward(b,b.x*2-e.tgt.x,b.y*2-e.tgt.y,b.spd*0.6,dt);
-      else {const pa=b.angle+Math.PI/2;moveToward(b,b.x+Math.cos(pa)*40,b.y+Math.sin(pa)*40,b.spd*0.5,dt);} // strafe at mid range
+      // pick a fighting position: advance if far, back off if too close, otherwise strafe
+      let tx,ty;
+      if(e.d>240){tx=e.tgt.x;ty=e.tgt.y;}
+      else if(e.d<140){tx=b.x*2-e.tgt.x;ty=b.y*2-e.tgt.y;}
+      else {if(b.strafeFlip===undefined||Math.random()<0.01)b.strafeFlip=Math.random()<0.5?1:-1;const pa=Math.atan2(e.tgt.y-b.y,e.tgt.x-b.x)+Math.PI/2*b.strafeFlip;tx=b.x+Math.cos(pa)*70;ty=b.y+Math.sin(pa)*70;}
+      mpSteer(b,tx,ty,b.spd,dt);
+      b.angle=Math.atan2(e.tgt.y-b.y,e.tgt.x-b.x); // always face the enemy while fighting
       b.fireCd-=dt;
-      if(b.fireCd<=0&&e.d>40){const a=b.angle+rand(-0.08,0.08);bullets.push({x:b.x,y:b.y,vx:Math.cos(a)*430,vy:Math.sin(a)*430,dmg:9,life:1.6,color:b.team==='blue'?'#aee0ff':'#ffb0b0',fromPlayer:false,team:b.team,br:4});spawnMuzzle(b.x+Math.cos(a)*16,b.y+Math.sin(a)*16,a);b.fireCd=rand(0.6,1.2);}
+      if(b.fireCd<=0&&e.d>40){const a=b.angle+rand(-0.08,0.08);bullets.push({x:b.x,y:b.y,vx:Math.cos(a)*430,vy:Math.sin(a)*430,dmg:9,life:1.6,color:b.team==='blue'?'#aee0ff':'#ffb0b0',fromPlayer:false,team:b.team,owner:b,br:4});spawnMuzzle(b.x+Math.cos(a)*16,b.y+Math.sin(a)*16,a);b.fireCd=rand(0.6,1.2);}
     } else {
-      b.angle=Math.atan2(goal.y-b.y,goal.x-b.x);
-      if(!moveToward(b,goal.x,goal.y,b.spd,dt)){b.stuckT+=dt;if(b.stuckT>0.4){b.wx=undefined;b.angle+=rand(-1.8,1.8);moveToward(b,b.x+Math.cos(b.angle)*40,b.y+Math.sin(b.angle)*40,b.spd,dt);b.stuckT=0;}}else b.stuckT=0;
+      b.angle=mpSteer(b,goal.x,goal.y,b.spd,dt);
     }
   }
 }
@@ -3000,17 +3105,19 @@ function updateMpBullets(dt){
     b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
     if(b.life<=0||isWall(b.x,b.y))return false;
     const bteam=b.team||(b.fromPlayer?'blue':'red');
-    for(const o of bots){if(!o.alive||o.team===bteam)continue;if(Math.hypot(b.x-o.x,b.y-o.y)<15+(b.br||4)){o.hp-=b.dmg;o.dmgT=0;spawnBlood(o.x,o.y,6);if(o.hp<=0)mpKill(b,o);return false;}}
-    if(bteam==='red'&&playerDownT<=0&&Math.hypot(b.x-player.x,b.y-player.y)<player.radius+(b.br||4)){if(player.invincible<=0){takeDamage(b.dmg);player.invincible=0.25;addShake(5,0.15);}spawnBlood(b.x,b.y,4);return false;}
+    for(const o of bots){if(!o.alive||o.team===bteam)continue;if(Math.hypot(b.x-o.x,b.y-o.y)<15+(b.br||4)){o.hp-=b.dmg;o.dmgT=0;spawnBlood(o.x,o.y,6);if(o.hp<=0)mpKill(b.owner||(b.fromPlayer?'me':null),o);return false;}}
+    if(bteam==='red'&&playerDownT<=0&&Math.hypot(b.x-player.x,b.y-player.y)<player.radius+(b.br||4)){if(player.invincible<=0){if(player.hp-b.dmg<=0&&b.owner&&b.owner.team){b.owner.kills=(b.owner.kills||0)+1;b.owner.points=(b.owner.points||0)+100;}takeDamage(b.dmg);player.invincible=0.25;addShake(5,0.15);}spawnBlood(b.x,b.y,4);return false;}
     return true;
   });
 }
-function mpKill(b,victim){
-  victim.alive=false;victim.respawnT=MP_RESPAWN;spawnBlood(victim.x,victim.y,16);
-  const killerTeam=b.team||(b.fromPlayer?'blue':'red');
-  if(mpMode==='tdm')mpScore[killerTeam]++;
+// killer = 'me' (player), a bot object, or null. victim is always a bot here (player death → mpPlayerDown)
+function mpKill(killer,victim){
+  victim.alive=false;victim.respawnT=MP_RESPAWN;victim.deaths=(victim.deaths||0)+1;spawnBlood(victim.x,victim.y,16);
+  let kt=null;
+  if(killer==='me'){kt='blue';mpMe.kills++;mpMe.points+=100;sessionCoins+=2;}
+  else if(killer&&killer.team){kt=killer.team;killer.kills=(killer.kills||0)+1;killer.points=(killer.points||0)+100;}
+  if(kt&&mpMode==='tdm')mpScore[kt]++;
   if(victim.carryFlag)mpFlagDropFrom(victim);
-  if(b.fromPlayer){sessionKills++;sessionCoins+=2;bumpChallenge('kills',1);}
 }
 function mpFlagDropFrom(c){if(!mpFlags)return;for(const t of ['blue','red']){const f=mpFlags[t];if(f.carrier===c){f.carrier=null;f.pos={x:c.x,y:c.y};f.downT=10;}}if(c)c.carryFlag=null;}
 function mpCountIn(z,team){let n=0;for(const b of bots){if(b.alive&&b.team===team&&Math.hypot(b.x-z.x,b.y-z.y)<MP_ZONE_R)n++;}if(team==='blue'&&playerDownT<=0&&Math.hypot(player.x-z.x,player.y-z.y)<MP_ZONE_R)n++;return n;}
@@ -3020,7 +3127,10 @@ function mpCapZone(z,team,n,dt){
   if(z.owner===team){z.prog=MP_CAP_TIME;z.capTeam=team;return;}
   if(z.capTeam!==team){z.capTeam=team;z.prog=0;}
   z.prog+=n*dt;
-  if(z.prog>=MP_CAP_TIME){z.owner=team;z.prog=MP_CAP_TIME;addNotif('Zone '+z.id+' captured by '+(team==='blue'?'BLUE':'RED')+'!',team==='blue'?MP_BLUE:MP_RED,3);}
+  if(z.prog>=MP_CAP_TIME){z.owner=team;z.prog=MP_CAP_TIME;
+    for(const o of bots){if(o.alive&&o.team===team&&Math.hypot(o.x-z.x,o.y-z.y)<MP_ZONE_R)o.points=(o.points||0)+150;}
+    if(team==='blue'&&playerDownT<=0&&Math.hypot(player.x-z.x,player.y-z.y)<MP_ZONE_R)mpMe.points+=150;
+    addNotif('Zone '+z.id+' captured by '+(team==='blue'?'BLUE':'RED')+'!',team==='blue'?MP_BLUE:MP_RED,3);}
 }
 function mpCheckFlag(c,cteam){
   const enemyT=cteam==='blue'?'red':'blue',f=mpFlags[enemyT];
@@ -3030,7 +3140,7 @@ function mpCheckFlag(c,cteam){
 }
 function mpCheckCapture(c,cteam){
   if(!c.carryFlag)return;const mine=mpFlags[cteam],homeOk=!mine.carrier&&Math.hypot(mine.pos.x-mine.home.x,mine.pos.y-mine.home.y)<12;
-  if(homeOk&&Math.hypot(c.x-mine.home.x,c.y-mine.home.y)<34){mpScore[cteam]++;const ef=mpFlags[c.carryFlag];ef.carrier=null;ef.pos={x:ef.home.x,y:ef.home.y};ef.downT=0;c.carryFlag=null;addNotif((cteam==='blue'?'BLUE':'RED')+' CAPTURED THE FLAG!','#ffd24a',4);if(c===player)sessionCoins+=20;}
+  if(homeOk&&Math.hypot(c.x-mine.home.x,c.y-mine.home.y)<34){mpScore[cteam]++;const ef=mpFlags[c.carryFlag];ef.carrier=null;ef.pos={x:ef.home.x,y:ef.home.y};ef.downT=0;c.carryFlag=null;addNotif((cteam==='blue'?'BLUE':'RED')+' CAPTURED THE FLAG!','#ffd24a',4);if(c===player){mpMe.points+=300;sessionCoins+=20;}else c.points=(c.points||0)+300;}
 }
 function updateMpRules(dt){
   if(mpEnded)return;
@@ -3049,7 +3159,20 @@ function updateMpRules(dt){
   }
   if(mpScore.blue>=mpScoreLimit||mpScore.red>=mpScoreLimit||mpTimer<=0)mpEnd();
 }
-function mpEnd(){mpEnded=true;const won=mpScore.blue>mpScore.red;sessionCoins+=won?60:20;commitRun(false);state=STATE.WIN;}
+// Fold the current match's stats into the saved MP career totals (used on match end AND on quit)
+function mpCommitStats(won,bonus){
+  if(mpCommitted)return;mpCommitted=true;
+  saveData.coins+=sessionCoins+(bonus||0);sessionCoins=0;
+  const mp=saveData.mp;
+  mp.kills+=mpMe.kills;mp.deaths+=mpMe.deaths;mp.points+=mpMe.points;mp.matches++;if(won)mp.wins++;
+  if(mpMe.points>mp.best.points)mp.best={kills:mpMe.kills,deaths:mpMe.deaths,points:mpMe.points};
+  writeSave();
+}
+function mpEnd(){
+  mpEnded=true;const won=mpScore.blue>mpScore.red;
+  mpCommitStats(won,won?60:20);
+  state=STATE.WIN;
+}
 
 function drawBot(b,camX,camY){
   if(!b.alive)return;const sx=b.x-camX,sy=b.y-camY;
@@ -3059,6 +3182,7 @@ function drawBot(b,camX,camY){
   ctx.fillStyle=b.team==='blue'?'#4aa0e0':'#e04a4a';ctx.beginPath();ctx.arc(0,0,10,0,Math.PI*2);ctx.fill();
   ctx.fillStyle='#555';ctx.fillRect(8,-4,22,8);ctx.fillStyle='#333';ctx.fillRect(22,-3,10,6);
   ctx.restore();
+  ctx.fillStyle=b.team==='blue'?'#9fd0ff':'#ffb0b0';ctx.font='bold 8px Courier New';ctx.textAlign='center';ctx.fillText(b.name||'',sx,sy-30);
   if(b.hp<b.maxHp){ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(sx-14,sy-25,28,4);ctx.fillStyle=b.team==='blue'?MP_BLUE:MP_RED;ctx.fillRect(sx-14,sy-25,28*clamp(b.hp/b.maxHp,0,1),4);}
   if(b.team==='blue'){ctx.fillStyle='rgba(120,220,160,0.9)';ctx.font='bold 9px Courier New';ctx.textAlign='center';ctx.fillText('▲',sx,sy-29);}
   if(b.carryFlag){ctx.fillStyle=b.carryFlag==='blue'?MP_BLUE:MP_RED;ctx.fillRect(sx-1,sy-38,3,12);ctx.fillRect(sx+2,sy-38,8,5);}
@@ -3099,7 +3223,7 @@ function drawMpHUD(){
   const ammoTxt=player.weapon==='rifle'?(player.reloadT>0?'RELOADING…':player.mag+' / ∞'):(player.weapon==='knife'?'KNIFE — 1-shot':'PISTOL — ∞');
   ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(W-180,H-46,166,32);
   ctx.fillStyle=player.weapon==='rifle'&&player.mag===0&&player.reloadT<=0?'#ff6666':'#fff';ctx.font='bold 13px Courier New';ctx.textAlign='right';ctx.fillText(ammoTxt,W-22,H-31);
-  ctx.fillStyle='#9aa0a6';ctx.font='9px Courier New';ctx.textAlign='left';ctx.fillText(`R reload · G nade`,W-174,H-31);
+  ctx.fillStyle='#9aa0a6';ctx.font='9px Courier New';ctx.textAlign='left';ctx.fillText(`R reload · G nade · 5 suicide`,W-174,H-31);
   ctx.textAlign='right';ctx.fillStyle='#cdd';ctx.font='10px Courier New';ctx.fillText(`💣${player.grenades.frag}  ✦${player.grenades.flashbang} (${player.selectedGrenade==='frag'?'FRAG':'FLASH'})`,W-22,H-52);
   if(player.weapon==='rifle'&&player.mag===0&&player.reloadT<=0){ctx.fillStyle='#ff6666';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('PRESS R TO RELOAD',W/2,H-78);}
   if(player.carryFlag){ctx.fillStyle='#ffd24a';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('🚩 You have the enemy flag — get it home!',W/2,H-60);}
@@ -3117,6 +3241,7 @@ function startMultiplayer(modeId){
   syncChallengePeriods();
   gameMode='mp';mission=null;mpMode=modeId;mpEnded=false;
   mpScore={blue:0,red:0};mpAcc={blue:0,red:0};mpScoreLimit=MP_MODES[modeId].limit;mpTimer=600;playerDownT=0;
+  mpMe={name:(saveData.username||'YOU').toUpperCase(),team:'blue',kills:0,deaths:0,points:0};
   bullets=[];particles=[];pickups=[];enemies=[];grenadeObjects=[];firePatches=[];notifs=[];deployables=[];airBombs=[];builtWalls=[];
   buyStationOpen=false;inventoryOpen=false;bigMapOpen=false;workshopOpen=false;buildMode=false;lightsOn=true;
   sessionCoins=0;sessionKills=0;resetUpgrades();
@@ -3128,6 +3253,7 @@ function startMultiplayer(modeId){
   player.grenades={frag:2,molotov:0,flashbang:2};player.selectedGrenade='frag';
   spawnBots();
   const ps=mpSpawnPos('blue');player.x=ps.x;player.y=ps.y;
+  mpCommitted=false;startCountdown=5;
   state=STATE.PLAYING;gameStartTime=performance.now()/1000;
   addNotif(MP_MODES[modeId].name+' — '+MP_MODES[modeId].desc,'#7fd4ff',5);
   addNotif('BLUE (you + allies) vs RED · respawns on · WASD move, click shoot','#9aa0a6',5);
@@ -3142,14 +3268,17 @@ function loop(now){
   else if(state===STATE.BRIEFING){drawBriefing(dt);}
   else if(state===STATE.PLAYING||state===STATE.PAUSED){
     if(state===STATE.PLAYING){
+      const frozen=startCountdown>0;if(frozen){startCountdown-=dt;updateParticles(dt);updateNotifs(dt);}
       if(gameMode==='campaign'){
         updatePlayer(dt);updateBullets(dt);updateParticles(dt);updateNotifs(dt);
         updateStealth(dt);
       } else if(gameMode==='mp'){
+        if(!frozen){
         if(playerDownT<=0)updatePlayer(dt);
         updateMpBullets(dt);updateGrenades(dt);updateParticles(dt);updateNotifs(dt);
         updateBots(dt);updateMpRules(dt);
-      } else {
+        }
+      } else if(!frozen){
       updatePlayer(dt);updateBullets(dt);updateParticles(dt);updatePickups(dt);
       updateGrenades(dt);updateDeployables(dt);updateAirBombs(dt);updateBarricades(dt);updateBuiltWalls(dt);updateInventoryAnim(dt);updateNotifs(dt);
       if(waveActive){
@@ -3177,7 +3306,11 @@ function loop(now){
     if(gameMode==='campaign')drawStealthHUD();
     else if(gameMode==='mp')drawMpHUD();
     else{drawHUD();drawInventory();drawBuyStation();drawWorkshop();drawBigMap();}
-    drawChallengeSidebar();
+    if(startCountdown>0){
+      ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(0,0,W,H);
+      ctx.textAlign='center';ctx.fillStyle='#ffd24a';ctx.font='bold 22px Courier New';ctx.fillText('GET READY',W/2,H/2-70);
+      ctx.fillStyle='#fff';ctx.shadowColor='#e63946';ctx.shadowBlur=30;ctx.font='bold 120px Courier New';ctx.fillText(Math.ceil(startCountdown),W/2,H/2+44);ctx.shadowBlur=0;
+    }
     if(state===STATE.PAUSED)drawPaused();
   }
   else if(state===STATE.GAME_OVER)drawGameOver();
@@ -3277,6 +3410,8 @@ requestAnimationFrame(loop);
     m.equippedOutfit=cloud.equippedOutfit||local.equippedOutfit||'default';
     m.username=local.username||cloud.username||'';
     m.challenges=mergeChallenges(local.challenges,cloud.challenges);
+    const lm=local.mp||{},cm=cloud.mp||{},lb=lm.best||{},cb=cm.best||{};
+    m.mp={kills:mx(lm.kills,cm.kills),deaths:mx(lm.deaths,cm.deaths),points:mx(lm.points,cm.points),matches:mx(lm.matches,cm.matches),wins:mx(lm.wins,cm.wins),best:{kills:mx(lb.kills,cb.kills),deaths:mx(lb.deaths,cb.deaths),points:mx(lb.points,cb.points)}};
     return m;
   }
   // reconcile challenge progress: newer period wins; same period takes max progress + union claims
