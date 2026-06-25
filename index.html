@@ -2,6 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -389,6 +390,7 @@ function drawNotifs(){
 
 const keys={};
 const mouse={x:W/2,y:H/2,down:false};
+const touchMove={active:false,dx:0,dy:0}; // mobile left-stick movement (desktop leaves active=false)
 
 document.addEventListener('keydown',e=>{
   // Inventory arrow navigation — consume before anything else
@@ -1204,6 +1206,7 @@ function updatePlayer(dt){
     if(keys['s']||keys['S']||keys['ArrowDown'])dy+=1;
     if(keys['a']||keys['A']||keys['ArrowLeft'])dx-=1;
     if(keys['d']||keys['D']||keys['ArrowRight'])dx+=1;
+    if(touchMove.active){dx=touchMove.dx;dy=touchMove.dy;} // mobile joystick overrides (never set on desktop)
   }
   const len=Math.hypot(dx,dy);if(len>0){dx/=len;dy/=len;}
   const spd=player.lastStand?80:player.speed;
@@ -3504,6 +3507,118 @@ requestAnimationFrame(loop);
     acct.style.display=onMenu?'block':'none';
     if(!onMenu){closeModal();closeName();}
     requestAnimationFrame(syncVis);
+  })();
+})();
+
+// ── Mobile / touch controls ──────────────────────────────────────────────────
+// Self-contained: only wires up on touch devices, so the desktop/web build is
+// unchanged at runtime. Feeds the SAME inputs the game already reads — movement
+// via touchMove, aim/fire via mouse.x/y/down, actions via synthetic key events,
+// and menu/shop taps via handleClick.
+(function(){
+  const IS_TOUCH=('ontouchstart' in window)||navigator.maxTouchPoints>0;
+  if(!IS_TOUCH)return;
+  document.body.classList.add('touch');
+
+  const css=document.createElement('style');
+  css.textContent=`
+  body.touch{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;overscroll-behavior:none;}
+  body.touch #game{touch-action:none;cursor:default;}
+  #mzRotate{position:fixed;inset:0;z-index:100;display:none;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#000;color:#e63946;font-family:'JetBrains Mono','Courier New',monospace;font-size:56px;}
+  #mzRotate small{font-size:16px;color:#bbb;letter-spacing:3px;}
+  @media(orientation:portrait){body.touch #mzRotate{display:flex;}}
+  #mzStick{position:fixed;z-index:40;width:132px;height:132px;margin:-66px 0 0 -66px;border-radius:50%;border:2px solid rgba(255,255,255,.22);background:rgba(255,255,255,.05);display:none;pointer-events:none;}
+  #mzKnob{position:absolute;left:50%;top:50%;width:58px;height:58px;margin:-29px 0 0 -29px;border-radius:50%;background:rgba(255,255,255,.28);border:2px solid rgba(255,255,255,.5);}
+  .mzRow{position:fixed;z-index:45;display:none;gap:12px;}
+  #mzActions{right:calc(18px + env(safe-area-inset-right));bottom:calc(20px + env(safe-area-inset-bottom));flex-wrap:wrap;width:178px;justify-content:flex-end;}
+  #mzUtil{left:calc(16px + env(safe-area-inset-left));top:calc(14px + env(safe-area-inset-top));}
+  .mzBtn{width:62px;height:62px;border-radius:50%;background:rgba(18,18,22,.55);border:2px solid rgba(230,57,70,.6);color:#fff;font-family:'JetBrains Mono','Courier New',monospace;font-size:10px;font-weight:700;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.15;}
+  .mzBtn b{font-size:21px;font-weight:400;}
+  .mzBtn:active{background:rgba(230,57,70,.5);}
+  #mzUtil .mzBtn{width:50px;height:50px;border-color:rgba(255,255,255,.32);font-size:9px;}
+  #mzClose{position:fixed;z-index:50;right:calc(16px + env(safe-area-inset-right));top:calc(14px + env(safe-area-inset-top));width:56px;height:56px;border-radius:50%;background:rgba(18,18,22,.72);border:2px solid rgba(255,255,255,.5);color:#fff;font-size:24px;display:none;align-items:center;justify-content:center;}
+  `;
+  document.head.appendChild(css);
+
+  const mk=(tag,id,html)=>{const e=document.createElement(tag);if(id)e.id=id;if(html!=null)e.innerHTML=html;return e;};
+  document.body.appendChild(mk('div','mzRotate','📱↻<small>ROTATE TO LANDSCAPE</small>'));
+  const stick=mk('div','mzStick'),knob=mk('div','mzKnob');stick.appendChild(knob);document.body.appendChild(stick);
+
+  // synthetic key press → reuses every keyboard binding the game already has
+  function pressKey(k){
+    document.dispatchEvent(new KeyboardEvent('keydown',{key:k}));
+    document.dispatchEvent(new KeyboardEvent('keyup',{key:k}));
+  }
+  function button(d,parent){
+    const b=mk('div',null,'<b>'+d.ic+'</b>'+d.lbl);b.className='mzBtn';
+    b.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();b.style.opacity=.6;pressKey(d.key);},{passive:false});
+    b.addEventListener('touchend',e=>{e.preventDefault();b.style.opacity=1;},{passive:false});
+    parent.appendChild(b);
+  }
+
+  const actions=mk('div','mzActions');actions.className='mzRow';
+  [{ic:'✋',lbl:'USE',key:'Enter'},{ic:'💣',lbl:'NADE',key:'g'},{ic:'🔁',lbl:'SWAP',key:'y'},{ic:'🔄',lbl:'RELOAD',key:'r'},{ic:'🔧',lbl:'DEPLOY',key:'f'}].forEach(d=>button(d,actions));
+  document.body.appendChild(actions);
+
+  const util=mk('div','mzUtil');util.className='mzRow';
+  [{ic:'🗺',lbl:'MAP',key:'m'},{ic:'🔨',lbl:'BUILD',key:'b'},{ic:'⚡',lbl:'STREAK',key:'e'},{ic:'⏸',lbl:'',key:'Escape'}].forEach(d=>button(d,util));
+  document.body.appendChild(util);
+
+  const closeBtn=mk('div','mzClose','✕');
+  closeBtn.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();pressKey('Escape');},{passive:false});
+  document.body.appendChild(closeBtn);
+
+  // ── touch → game input ──
+  const tco=t=>{const r=canvas.getBoundingClientRect();return{x:(t.clientX-r.left)*(W/r.width),y:(t.clientY-r.top)*(H/r.height)};};
+  const uiOpen=()=>inventoryOpen||buyStationOpen||bigMapOpen||workshopOpen;
+  const freePlay=()=>state===STATE.PLAYING&&!uiOpen()&&!buildMode&&!airstrikePending;
+  let moveId=null,aimId=null,ox=0,oy=0;
+
+  canvas.addEventListener('touchstart',e=>{
+    e.preventDefault();
+    for(const t of e.changedTouches){
+      const c=tco(t);
+      if(!freePlay()){mouse.x=c.x;mouse.y=c.y;handleClick({clientX:t.clientX,clientY:t.clientY});continue;}
+      if(c.x<W*0.5&&moveId===null){ // left half = move stick
+        moveId=t.identifier;ox=c.x;oy=c.y;touchMove.active=true;touchMove.dx=0;touchMove.dy=0;
+        stick.style.display='block';stick.style.left=t.clientX+'px';stick.style.top=t.clientY+'px';knob.style.transform='translate(0,0)';
+      }else if(aimId===null){ // right half = aim + fire toward finger
+        aimId=t.identifier;mouse.x=c.x;mouse.y=c.y;mouse.down=true;
+      }
+    }
+  },{passive:false});
+
+  canvas.addEventListener('touchmove',e=>{
+    e.preventDefault();
+    for(const t of e.changedTouches){
+      const c=tco(t);
+      if(t.identifier===moveId){
+        const dx=c.x-ox,dy=c.y-oy,d=Math.hypot(dx,dy);
+        if(d>6){touchMove.dx=dx/d;touchMove.dy=dy/d;}else{touchMove.dx=0;touchMove.dy=0;}
+        const k=Math.min(d,46),a=Math.atan2(dy,dx);
+        knob.style.transform='translate('+Math.cos(a)*k+'px,'+Math.sin(a)*k+'px)';
+      }else if(t.identifier===aimId){mouse.x=c.x;mouse.y=c.y;}
+    }
+  },{passive:false});
+
+  const end=e=>{
+    e.preventDefault();
+    for(const t of e.changedTouches){
+      if(t.identifier===moveId){moveId=null;touchMove.active=false;touchMove.dx=0;touchMove.dy=0;stick.style.display='none';}
+      if(t.identifier===aimId){aimId=null;mouse.down=false;}
+    }
+  };
+  canvas.addEventListener('touchend',end,{passive:false});
+  canvas.addEventListener('touchcancel',end,{passive:false});
+
+  // ── surface the right controls for the current screen ──
+  (function sync(){
+    const playing=state===STATE.PLAYING,open=uiOpen();
+    actions.style.display=freePlay()?'flex':'none';
+    util.style.display=(playing&&!open)?'flex':'none';
+    closeBtn.style.display=((playing&&open)||state===STATE.PAUSED)?'flex':'none';
+    if(!playing&&(moveId!==null||aimId!==null)){moveId=aimId=null;touchMove.active=false;mouse.down=false;stick.style.display='none';}
+    requestAnimationFrame(sync);
   })();
 })();
 </script>
