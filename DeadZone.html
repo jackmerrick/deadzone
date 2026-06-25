@@ -42,6 +42,17 @@
   #dzSignup:hover{background:#2a2a2a;}
   #dzAuthErr{color:#ff7676;font-size:11px;min-height:14px;text-align:center;margin-bottom:10px;}
   #dzAuthClose{display:block;margin:14px auto 0;background:none;border:none;color:#666;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;text-decoration:underline;}
+  /* username modal — reuses the auth-box look */
+  #dzName{position:fixed;inset:0;z-index:31;background:rgba(0,0,0,0.82);display:none;align-items:center;justify-content:center;font-family:'Courier New',monospace;}
+  #dzNameBox{background:#0d0d0d;border:2px solid #3fa9ff;border-radius:6px;padding:26px 28px;width:340px;box-shadow:0 0 40px rgba(63,169,255,0.3);}
+  #dzNameBox h2{color:#3fa9ff;font-size:20px;text-align:center;margin-bottom:4px;letter-spacing:2px;}
+  #dzNameBox p.sub{color:#888;font-size:11px;text-align:center;margin-bottom:18px;}
+  #dzNameBox input{width:100%;box-sizing:border-box;margin-bottom:12px;padding:10px;background:#000;border:1px solid #444;color:#fff;font-family:'Courier New',monospace;font-size:13px;border-radius:3px;}
+  #dzNameBox input:focus{outline:none;border-color:#3fa9ff;}
+  #dzNameSave{width:100%;padding:10px;font-family:'Courier New',monospace;font-size:13px;font-weight:bold;cursor:pointer;border-radius:3px;border:1px solid #3fa9ff;background:#3fa9ff;color:#06121d;}
+  #dzNameSave:hover{background:#5cb8ff;}
+  #dzNameErr{color:#ff7676;font-size:11px;min-height:14px;text-align:center;margin-bottom:10px;}
+  #dzNameClose{display:block;margin:14px auto 0;background:none;border:none;color:#666;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;text-decoration:underline;}
 </style>
 <div id="dzAcct">
   <button id="dzSignInBtn">☁ SIGN IN · CLOUD SAVE</button>
@@ -63,6 +74,16 @@
       <button id="dzSignup">SIGN UP</button>
     </div>
     <button id="dzAuthClose">cancel</button>
+  </div>
+</div>
+<div id="dzName">
+  <div id="dzNameBox">
+    <h2>CHOOSE A NAME</h2>
+    <p class="sub">This is how you'll appear on the global leaderboard</p>
+    <div id="dzNameErr"></div>
+    <input id="dzNameIn" type="text" placeholder="username (3–16 chars)" maxlength="16" autocomplete="off">
+    <button id="dzNameSave">SAVE NAME</button>
+    <button id="dzNameClose">maybe later</button>
   </div>
 </div>
 
@@ -126,12 +147,21 @@ function nextRank(kills){for(const x of RANKS)if(kills<x.kills)return x;return n
 const SAVE_DEFAULT={
   coins:0, kills:0, deaths:0, highestLevel:1, gamesPlayed:0, bestScore:0,
   ownedHats:['none'], ownedOutfits:['default'], equippedHat:'none', equippedOutfit:'default',
-  campaignDone:[]   // ids of completed stealth missions
+  campaignDone:[],  // ids of completed stealth missions
+  username:'',      // chosen public name for the leaderboard
+  // daily/weekly challenge tracking (see CHALLENGE section below)
+  challenges:{ dailyKey:0, weeklyKey:0, progress:{}, claimed:{} }
 };
 let saveData=loadSave();
 function loadSave(){
-  try{const raw=localStorage.getItem('dz_save');if(raw){return Object.assign({},SAVE_DEFAULT,JSON.parse(raw));}}catch(e){}
-  return Object.assign({},SAVE_DEFAULT);
+  let s;
+  try{const raw=localStorage.getItem('dz_save');if(raw)s=Object.assign({},SAVE_DEFAULT,JSON.parse(raw));}catch(e){}
+  if(!s)s=Object.assign({},SAVE_DEFAULT);
+  // challenges is a nested object — make sure it's a fresh, fully-shaped copy
+  const c=s.challenges||{};
+  s.challenges={dailyKey:c.dailyKey||0, weeklyKey:c.weeklyKey||0, progress:Object.assign({},c.progress), claimed:Object.assign({},c.claimed)};
+  if(typeof s.username!=='string')s.username='';
+  return s;
 }
 function writeSave(){try{localStorage.setItem('dz_save',JSON.stringify(saveData));}catch(e){}}
 
@@ -233,7 +263,86 @@ function resetUpgrades(){
 // Notifications
 let notifs=[];
 function addNotif(text,color='#fff',dur=4){notifs.push({text,color,timer:dur,max:dur});}
-function updateNotifs(dt){notifs=notifs.filter(n=>{n.timer-=dt;return n.timer>0;});}
+// challengeFlash holds short-lived "just completed" green flashes for the sidebar (id -> seconds left)
+let challengeFlash={};
+function updateNotifs(dt){
+  notifs=notifs.filter(n=>{n.timer-=dt;return n.timer>0;});
+  for(const id in challengeFlash){challengeFlash[id]-=dt;if(challengeFlash[id]<=0)delete challengeFlash[id];}
+}
+
+// ── Daily / Weekly challenges ────────────────────────────────────────────────
+// Challenges are randomly generated but DETERMINISTIC per period: the day/week
+// integer is both the RNG seed and the stored period key, so everyone sees the
+// same set and it auto-resets when the period rolls over.
+function dayNumber(){return Math.floor(Date.now()/86400000);}            // UTC day index
+function weekNumber(){return Math.floor((Date.now()/86400000+4)/7);}     // +4 → week starts Monday
+function seededRng(seed){let s=seed>>>0;return function(){s=(s+0x6D2B79F5)|0;let t=Math.imul(s^(s>>>15),1|s);t=(t+Math.imul(t^(t>>>7),61|t))^t;return ((t^(t>>>14))>>>0)/4294967296;};}
+
+// objective `type` strings MUST match the bumpChallenge() call sites
+const CHALLENGE_TYPES=[
+  {type:'kills',   verb:'Kill {n} zombies',               daily:[20,60],  weekly:[200,500]},
+  {type:'coins',   verb:'Earn {n} coins in runs',          daily:[40,120], weekly:[400,1000]},
+  {type:'level',   verb:'Reach level {n} in a run',        daily:[3,7],    weekly:[8,15],  single:true},
+  {type:'boss',    verb:'Kill {n} bosses',                 daily:[1,2],    weekly:[5,10]},
+  {type:'stealth', verb:'Complete {n} stealth missions',   daily:[1,2],    weekly:[3,6]},
+  {type:'games',   verb:'Play {n} games',                  daily:[2,4],    weekly:[10,20]},
+  {type:'survive', verb:'Reach level {n} without dying',   daily:[3,6],    weekly:[8,14],  single:true},
+];
+const CHALLENGE_REWARD={easy:100,medium:300,hard:700};
+const CHALLENGE_DIFFS=['easy','medium','hard'];
+const DIFF_MULT={easy:1,medium:2,hard:4};
+
+function generateChallenges(seed, periodLabel){
+  const rng=seededRng((seed^(periodLabel==='weekly'?0x9E3779B9:0))>>>0);
+  return CHALLENGE_DIFFS.map(diff=>{
+    const tmpl=CHALLENGE_TYPES[Math.floor(rng()*CHALLENGE_TYPES.length)];
+    const range=tmpl[periodLabel];
+    let target=Math.round(range[0]+rng()*(range[1]-range[0]));
+    if(!tmpl.single)target=Math.max(1,Math.round(target*DIFF_MULT[diff]));
+    return {id:periodLabel+'_'+diff, type:tmpl.type, diff, target, reward:CHALLENGE_REWARD[diff], single:!!tmpl.single, label:tmpl.verb.replace('{n}',target)};
+  });
+}
+function activeChallenges(){
+  return {
+    daily:{key:dayNumber(),  list:generateChallenges(dayNumber(),'daily')},
+    weekly:{key:weekNumber(),list:generateChallenges(weekNumber(),'weekly')},
+  };
+}
+// drop a tier's progress/claims when its period rolls over (coins already earned are untouched)
+function syncChallengePeriods(){
+  const c=saveData.challenges;if(!c)return;
+  if(c.dailyKey!==dayNumber()){c.dailyKey=dayNumber();['daily_easy','daily_medium','daily_hard'].forEach(id=>{delete c.progress[id];delete c.claimed[id];});}
+  if(c.weeklyKey!==weekNumber()){c.weeklyKey=weekNumber();['weekly_easy','weekly_medium','weekly_hard'].forEach(id=>{delete c.progress[id];delete c.claimed[id];});}
+}
+// single tracking + payout choke-point. type matches a CHALLENGE_TYPES.type; amount is the delta (or new value for single types)
+function bumpChallenge(type, amount){
+  syncChallengePeriods();
+  const ac=activeChallenges(),c=saveData.challenges;let changed=false;
+  [ac.daily,ac.weekly].forEach(period=>period.list.forEach(ch=>{
+    if(ch.type!==type)return;
+    const cur=c.progress[ch.id]||0;
+    const next=ch.single?Math.max(cur,amount):cur+amount;
+    if(next===cur)return;
+    c.progress[ch.id]=next;changed=true;
+    if(next>=ch.target&&!c.claimed[ch.id]){
+      c.claimed[ch.id]=true;saveData.coins+=ch.reward;challengeFlash[ch.id]=2.5;
+      addNotif(`✓ ${ch.diff.toUpperCase()} CHALLENGE DONE — +${ch.reward} 🪙`,'#2ecc71',5);
+    }
+  }));
+  if(changed)writeSave();
+}
+syncChallengePeriods(); // clear any stale tier from a previous day/week on launch
+
+// ── Leaderboard state (implementations assigned by the Firebase IIFE below) ───
+let lbMetric='bestScore', lbSignedIn=false, lbUid=null;
+let lbCache={metric:null,rows:[],loading:false,error:null};
+let fetchLeaderboard=function(){}, pushLeaderboard=function(){}, openNameModal=function(){};
+const LB_BOARDS=[
+  {key:'bestScore',   label:'BEST SCORE',  fmt:v=>String(v||0)},
+  {key:'kills',       label:'TOTAL KILLS', fmt:v=>String(v||0)},
+  {key:'highestLevel',label:'HIGHEST LVL', fmt:v=>(v||1)+'/20'},
+  {key:'coins',       label:'TOTAL COINS', fmt:v=>'🪙 '+(v||0)},
+];
 function drawNotifs(){
   notifs.forEach((n,i)=>{
     const a=Math.min(1,n.timer*2)*Math.min(1,(n.max-n.timer)*4+0.1);
@@ -980,7 +1089,9 @@ function killEnemy(e){
   e.alive=false;score+=e.val;currency+=80+Math.floor(e.val/100)*20;
   // Persistent progression: coins + all-time kills
   sessionKills++;
-  sessionCoins+=e.type==='boss'?100:(1+Math.floor(e.val/100));
+  const coinGain=e.type==='boss'?100:(1+Math.floor(e.val/100));
+  sessionCoins+=coinGain;
+  bumpChallenge('kills',1);bumpChallenge('coins',coinGain);if(e.type==='boss')bumpChallenge('boss',1);
   spawnBlood(e.x,e.y,14);addShake(4.5,0.15);
   // Random loot drop (drop rate itself is randomised per kill)
   if(e.type!=='boss'&&Math.random()<rand(0.10,0.25))dropRandomLoot(e.x,e.y);
@@ -1577,6 +1688,7 @@ function drawInventory(){
 
 // ── Game flow ───────────────────────────────────────────────────────────────
 function startGame(mapIdx){
+  syncChallengePeriods();
   gameMode='zombies';mission=null;
   campaignMode=(mapIdx===undefined||mapIdx===null);
   fixedMapIdx=campaignMode?0:Math.max(0,Math.min(mapIdx,MAPS.length-1));
@@ -1605,6 +1717,7 @@ function commitRun(died){
   saveData.gamesPlayed++;
   if(globalLevel>saveData.highestLevel)saveData.highestLevel=globalLevel;
   if(score>saveData.bestScore)saveData.bestScore=score;
+  bumpChallenge('games',1);
   writeSave();
   sessionCoins=0;sessionKills=0;
 }
@@ -1623,6 +1736,7 @@ function advanceLevel(){
   pickups=[];
   clearBuiltWalls();buildMode=false;
   globalLevel++;
+  bumpChallenge('level',globalLevel);bumpChallenge('survive',globalLevel);
   if(globalLevel>20){state=STATE.WIN;if(score>highScore){highScore=score;localStorage.setItem('dz_hs',highScore);}commitRun(false);return;}
   const mapIdx=Math.floor((globalLevel-1)/5);
   const newMap=campaignMode&&(globalLevel-1)%5===0;
@@ -1874,12 +1988,14 @@ function updateStealth(dt){
 
 function missionComplete(){
   if(mission&&!saveData.campaignDone.includes(mission.id)){saveData.campaignDone.push(mission.id);writeSave();}
+  bumpChallenge('stealth',1);
   commitRun(false);
   state=STATE.WIN; // drawn as mission-complete because gameMode==='campaign'
 }
 
 function startMission(id){
   const m=findMission(id);if(!m)return;
+  syncChallengePeriods();
   mission=m;gameMode='campaign';
   globalLevel=1;score=0;currency=0;sessionCoins=0;sessionKills=0;
   waveActive=false;levelComplete=false;levelStartTimer=0;levelTimer=0;
@@ -2121,8 +2237,8 @@ function drawBriefing(dt){
 
 // ── Menu ───────────────────────────────────────────────────────────────────
 let menuAnim=0,menuTab='main',menuView='tiles'; // menuView: tiles | zombies | campaign
-const MENU_TABS=['main','locker','store','stats'];
-const MENU_TAB_LABELS={main:'PLAY',locker:'LOCKER',store:'STORE',stats:'STATS'};
+const MENU_TABS=['main','challenges','leaderboard','locker','store','stats'];
+const MENU_TAB_LABELS={main:'PLAY',challenges:'CHALLENGES',leaderboard:'LEADERS',locker:'LOCKER',store:'STORE',stats:'STATS'};
 // Clickable regions are rebuilt every menu frame; the click handler walks them.
 let menuRegions=[];
 function mReg(x,y,w,h,action){menuRegions.push({x,y,w,h,action});}
@@ -2139,16 +2255,18 @@ function drawMenu(){
   ctx.strokeStyle='#ffd700';ctx.lineWidth=1;ctx.strokeRect(W-210,20,190,34);
   ctx.fillStyle='#ffd700';ctx.font='bold 16px Courier New';ctx.textAlign='right';ctx.fillText(`🪙 ${saveData.coins} coins`,W-30,42);
   // Tab bar
-  const tw=150,th=38,gap=10,total=MENU_TABS.length*tw+(MENU_TABS.length-1)*gap,x0=W/2-total/2,ty=108;
+  const tw=120,th=38,gap=8,total=MENU_TABS.length*tw+(MENU_TABS.length-1)*gap,x0=W/2-total/2,ty=108;
   MENU_TABS.forEach((t,i)=>{
     const x=x0+i*(tw+gap),active=menuTab===t,hov=mHov(x,ty,tw,th);
     ctx.fillStyle=active?'#e63946':(hov?'#3a1414':'#141414');ctx.fillRect(x,ty,tw,th);
     ctx.strokeStyle=active?'#ff8585':'#333';ctx.lineWidth=2;ctx.strokeRect(x,ty,tw,th);
-    ctx.fillStyle=active?'#fff':'#999';ctx.font='bold 14px Courier New';ctx.textAlign='center';ctx.fillText(MENU_TAB_LABELS[t],x+tw/2,ty+24);
+    ctx.fillStyle=active?'#fff':'#999';ctx.font='bold 13px Courier New';ctx.textAlign='center';ctx.fillText(MENU_TAB_LABELS[t],x+tw/2,ty+24);
     mReg(x,ty,tw,th,()=>{if(t==='main'&&menuTab!=='main')menuView='tiles';menuTab=t;});
   });
   // Content
   if(menuTab==='main')drawMainMenu();
+  else if(menuTab==='challenges')drawChallenges();
+  else if(menuTab==='leaderboard')drawLeaderboard();
   else if(menuTab==='locker')drawLocker();
   else if(menuTab==='store')drawMenuShop();
   else if(menuTab==='stats')drawStats();
@@ -2274,6 +2392,121 @@ function drawStats(){
     ctx.fillStyle='#888';ctx.font='10px Courier New';ctx.textAlign='center';ctx.fillText(s[0],x+cardW/2,yy+24);
     ctx.fillStyle='#fff';ctx.font='bold 26px Courier New';ctx.fillText(String(s[1]),x+cardW/2,yy+58);
   });
+}
+
+// ── Challenges tab ───────────────────────────────────────────────────────────
+const DIFF_COLOR={easy:'#2ecc71',medium:'#3fa9ff',hard:'#ffd700'};
+function fmtCountdown(ms){const h=Math.floor(ms/3600000);if(h>=24){const d=Math.floor(h/24);return d+'d '+(h%24)+'h';}const m=Math.floor((ms%3600000)/60000);return h+'h '+m+'m';}
+function drawChallengeCard(x,y,w,h,ch){
+  const c=saveData.challenges,prog=Math.min(c.progress[ch.id]||0,ch.target),done=!!c.claimed[ch.id];
+  ctx.fillStyle=done?'#0f2418':'#101010';ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle=done?'#2ecc71':'#2a2a2a';ctx.lineWidth=1;ctx.strokeRect(x,y,w,h);
+  // difficulty pill
+  ctx.fillStyle=DIFF_COLOR[ch.diff];ctx.fillRect(x,y,5,h);
+  ctx.fillStyle=DIFF_COLOR[ch.diff];ctx.font='bold 10px Courier New';ctx.textAlign='left';ctx.fillText(ch.diff.toUpperCase(),x+14,y+18);
+  // reward (right)
+  ctx.fillStyle=done?'#2ecc71':'#ffd700';ctx.font='bold 11px Courier New';ctx.textAlign='right';ctx.fillText(done?'✓ CLAIMED':('🪙 '+ch.reward),x+w-12,y+18);
+  // label
+  ctx.fillStyle='#ddd';ctx.font='12px Courier New';ctx.textAlign='left';ctx.fillText(ch.label,x+14,y+38);
+  // progress bar
+  const bx=x+14,by=y+h-16,bw=w-28,bh=8,r=ch.target?prog/ch.target:0;
+  ctx.fillStyle='#222';ctx.fillRect(bx,by,bw,bh);
+  ctx.fillStyle=done?'#2ecc71':'#ffd700';ctx.fillRect(bx,by,bw*r,bh);
+  ctx.strokeStyle='#444';ctx.lineWidth=1;ctx.strokeRect(bx,by,bw,bh);
+  ctx.fillStyle='#999';ctx.font='9px Courier New';ctx.textAlign='right';ctx.fillText(prog+' / '+ch.target,x+w-12,y+h-6);
+}
+function drawChallenges(){
+  syncChallengePeriods();
+  const ac=activeChallenges();
+  const now=Date.now();
+  const dailyLeft=86400000-(now%86400000);
+  const weekLeft=((ac.weekly.key+1)*7-4)*86400000 - now; // ms until next week boundary
+  ctx.fillStyle='#e63946';ctx.shadowColor='#e63946';ctx.shadowBlur=14;ctx.font='bold 26px Courier New';ctx.textAlign='center';ctx.fillText('CHALLENGES',W/2,176);ctx.shadowBlur=0;
+  ctx.fillStyle='#888';ctx.font='11px Courier New';ctx.fillText('Complete challenges as you play — rewards are paid the instant you hit the target.',W/2,200);
+  const colW=Math.min(460,(W-120)/2),gap=40,totalW=colW*2+gap,x0=W/2-totalW/2;
+  const ch=72,cg=12,headY=236;
+  const cols=[{label:'DAILY',sub:'resets in '+fmtCountdown(dailyLeft),list:ac.daily.list,x:x0},
+              {label:'WEEKLY',sub:'resets in '+fmtCountdown(Math.max(0,weekLeft)),list:ac.weekly.list,x:x0+colW+gap}];
+  cols.forEach(col=>{
+    ctx.fillStyle='#fff';ctx.font='bold 16px Courier New';ctx.textAlign='left';ctx.fillText(col.label,col.x,headY);
+    ctx.fillStyle='#777';ctx.font='10px Courier New';ctx.textAlign='right';ctx.fillText(col.sub,col.x+colW,headY);
+    col.list.forEach((c,i)=>drawChallengeCard(col.x,headY+16+i*(ch+cg),colW,ch,c));
+  });
+}
+
+// In-game sidebar: stacks each incomplete challenge on the right edge during play
+function drawChallengeSidebar(){
+  if(!saveData.challenges)return;
+  const ac=activeChallenges(),c=saveData.challenges;
+  const all=ac.daily.list.concat(ac.weekly.list).filter(ch=>!c.claimed[ch.id]||challengeFlash[ch.id]);
+  if(!all.length)return;
+  const cw=212,x=W-cw-12,cardH=42,gap=8;
+  let y=Math.max(80,H*0.28);
+  ctx.fillStyle='#888';ctx.font='bold 10px Courier New';ctx.textAlign='right';ctx.fillText('— CHALLENGES —',x+cw,y-6);
+  all.forEach(ch=>{
+    const prog=Math.min(c.progress[ch.id]||0,ch.target),r=ch.target?prog/ch.target:0;
+    const flashing=!!challengeFlash[ch.id];
+    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(x,y,cw,cardH);
+    ctx.fillStyle=DIFF_COLOR[ch.diff];ctx.fillRect(x,y,4,cardH);
+    // label (truncated)
+    let lbl=ch.label;if(lbl.length>30)lbl=lbl.slice(0,29)+'…';
+    ctx.fillStyle=flashing?'#2ecc71':'#ccc';ctx.font='10px Courier New';ctx.textAlign='left';ctx.fillText(lbl,x+10,y+15);
+    // bar
+    const bx=x+10,by=y+24,bw=cw-20,bh=8;
+    ctx.fillStyle='#222';ctx.fillRect(bx,by,bw,bh);
+    ctx.fillStyle=flashing?'#2ecc71':'#ffd700';ctx.fillRect(bx,by,bw*r,bh);
+    ctx.fillStyle='#999';ctx.font='9px Courier New';ctx.textAlign='right';ctx.fillText(prog+'/'+ch.target,x+cw-10,y+15);
+    y+=cardH+gap;
+  });
+  ctx.textAlign='left';
+}
+
+// ── Leaderboard tab ──────────────────────────────────────────────────────────
+function drawLeaderboard(){
+  const cx=W/2;
+  ctx.fillStyle='#ffd700';ctx.shadowColor='#ffd700';ctx.shadowBlur=14;ctx.font='bold 26px Courier New';ctx.textAlign='center';ctx.fillText('GLOBAL LEADERBOARD',cx,176);ctx.shadowBlur=0;
+  if(!lbSignedIn){
+    ctx.fillStyle='#bbb';ctx.font='14px Courier New';ctx.fillText('Sign in to view and join the global leaderboard.',cx,250);
+    ctx.fillStyle='#666';ctx.font='12px Courier New';ctx.fillText('Use the ☁ SIGN IN button in the top-left corner.',cx,276);
+    return;
+  }
+  if(!saveData.username){
+    ctx.fillStyle='#bbb';ctx.font='14px Courier New';ctx.fillText('Choose a username to appear on the leaderboard.',cx,244);
+    const bw=220,bh=40,bx=cx-bw/2,by=268,hov=mHov(bx,by,bw,bh);
+    ctx.fillStyle=hov?'#3fa9ff':'#143447';ctx.fillRect(bx,by,bw,bh);
+    ctx.strokeStyle='#3fa9ff';ctx.lineWidth=2;ctx.strokeRect(bx,by,bw,bh);
+    ctx.fillStyle=hov?'#06121d':'#9fd4ff';ctx.font='bold 14px Courier New';ctx.fillText('CHOOSE NAME',cx,by+25);
+    mReg(bx,by,bw,bh,()=>openNameModal());
+    return;
+  }
+  // refetch when the selected board changes
+  if(lbCache.metric!==lbMetric&&!lbCache.loading)fetchLeaderboard(lbMetric);
+  // board selector buttons
+  const n=LB_BOARDS.length,bw=170,bh=32,gap=10,total=n*bw+(n-1)*gap,x0=cx-total/2,by=200;
+  LB_BOARDS.forEach((b,i)=>{
+    const x=x0+i*(bw+gap),active=lbMetric===b.key,hov=mHov(x,by,bw,bh);
+    ctx.fillStyle=active?'#ffd700':(hov?'#2a2415':'#141414');ctx.fillRect(x,by,bw,bh);
+    ctx.strokeStyle=active?'#ffd700':'#333';ctx.lineWidth=active?2:1;ctx.strokeRect(x,by,bw,bh);
+    ctx.fillStyle=active?'#1a1500':'#aaa';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText(b.label,x+bw/2,by+21);
+    mReg(x,by,bw,bh,()=>{lbMetric=b.key;});
+  });
+  const board=LB_BOARDS.find(b=>b.key===lbMetric);
+  const listY=256;
+  if(lbCache.loading){ctx.fillStyle='#888';ctx.font='13px Courier New';ctx.textAlign='center';ctx.fillText('Loading…',cx,listY+40);return;}
+  if(lbCache.error){ctx.fillStyle='#ff7676';ctx.font='13px Courier New';ctx.textAlign='center';ctx.fillText(lbCache.error,cx,listY+40);return;}
+  const rows=lbCache.rows||[];
+  if(!rows.length){ctx.fillStyle='#888';ctx.font='13px Courier New';ctx.textAlign='center';ctx.fillText('No entries yet — be the first!',cx,listY+40);return;}
+  const rw=Math.min(560,W-100),rx=cx-rw/2,rh=30;
+  rows.forEach((row,i)=>{
+    const y=listY+i*(rh+3),me=row.uid===lbUid;
+    ctx.fillStyle=me?'#16240f':(i%2?'#0d0d0d':'#111');ctx.fillRect(rx,y,rw,rh);
+    if(me){ctx.strokeStyle='#2ecc71';ctx.lineWidth=1;ctx.strokeRect(rx,y,rw,rh);}
+    ctx.textAlign='left';
+    ctx.fillStyle=i===0?'#ffd700':i===1?'#cfcfcf':i===2?'#cd7f32':'#888';ctx.font='bold 13px Courier New';ctx.fillText('#'+(i+1),rx+12,y+20);
+    ctx.fillStyle=me?'#9fffba':'#eee';ctx.font='13px Courier New';ctx.fillText((row.username||'???')+(me?'  (you)':''),rx+58,y+20);
+    ctx.textAlign='right';ctx.fillStyle='#ffd700';ctx.font='bold 13px Courier New';ctx.fillText(board.fmt(row[lbMetric]),rx+rw-14,y+20);
+  });
+  ctx.textAlign='left';
 }
 
 // Shared cosmetic grid used by Locker (equip) and Store (buy)
@@ -2415,6 +2648,7 @@ function loop(now){
     drawScreenFlash();
     if(gameMode==='campaign')drawStealthHUD();
     else{drawHUD();drawInventory();drawBuyStation();drawWorkshop();drawBigMap();}
+    drawChallengeSidebar();
     if(state===STATE.PAUSED)drawPaused();
   }
   else if(state===STATE.GAME_OVER)drawGameOver();
@@ -2460,6 +2694,22 @@ requestAnimationFrame(loop);
   el('dzSignup').onclick=()=>doAuth('signup');
   inPass.addEventListener('keydown',e=>{if(e.key==='Enter')doAuth('login');});
 
+  // username modal (leaderboard display name)
+  const nameModal=el('dzName'),nameIn=el('dzNameIn'),nameErr=el('dzNameErr');
+  ['keydown','keyup','keypress'].forEach(ev=>nameIn.addEventListener(ev,e=>e.stopPropagation()));
+  function openName(){nameErr.textContent='';nameIn.value=saveData.username||'';nameModal.style.display='flex';nameIn.focus();}
+  function closeName(){nameModal.style.display='none';}
+  openNameModal=openName; // expose to game-scope drawLeaderboard
+  el('dzNameClose').onclick=closeName;
+  el('dzNameSave').onclick=saveName;
+  nameIn.addEventListener('keydown',e=>{if(e.key==='Enter')saveName();});
+  function saveName(){
+    const v=nameIn.value.trim();
+    if(!/^[A-Za-z0-9_-]{3,16}$/.test(v)){nameErr.textContent='3–16 chars: letters, numbers, _ or - only.';return;}
+    saveData.username=v;writeLocal();closeName();
+    pushLeaderboardImpl();pushNow();
+  }
+
   function doAuth(kind){
     const email=inEmail.value.trim(),pass=inPass.value;
     if(!email||!pass){errEl.textContent='Enter an email and password.';return;}
@@ -2496,7 +2746,33 @@ requestAnimationFrame(loop);
     m.campaignDone=uni(local.campaignDone,cloud.campaignDone);
     m.equippedHat=cloud.equippedHat||local.equippedHat||'none';
     m.equippedOutfit=cloud.equippedOutfit||local.equippedOutfit||'default';
+    m.username=local.username||cloud.username||'';
+    m.challenges=mergeChallenges(local.challenges,cloud.challenges);
     return m;
+  }
+  // reconcile challenge progress: newer period wins; same period takes max progress + union claims
+  function mergeChallenges(local,cloud){
+    local=local||{dailyKey:0,weeklyKey:0,progress:{},claimed:{}};
+    const out={dailyKey:local.dailyKey||0,weeklyKey:local.weeklyKey||0,progress:Object.assign({},local.progress),claimed:Object.assign({},local.claimed)};
+    if(!cloud)return out;
+    function tier(prefix,lk,ck){
+      lk=lk||0;ck=ck||0;const ids=[prefix+'_easy',prefix+'_medium',prefix+'_hard'];
+      if(ck>lk){ // cloud period newer — take cloud's tier
+        out[prefix+'Key']=ck;
+        ids.forEach(id=>{
+          if(cloud.progress&&id in cloud.progress)out.progress[id]=cloud.progress[id];else delete out.progress[id];
+          if(cloud.claimed&&cloud.claimed[id])out.claimed[id]=true;else delete out.claimed[id];
+        });
+      } else if(ck===lk){ // same period — max progress, union claims
+        ids.forEach(id=>{
+          out.progress[id]=Math.max(out.progress[id]||0,(cloud.progress&&cloud.progress[id])||0);
+          if(cloud.claimed&&cloud.claimed[id])out.claimed[id]=true;
+        });
+      } // else local newer — keep local
+    }
+    tier('daily',local.dailyKey,cloud.dailyKey);
+    tier('weekly',local.weeklyKey,cloud.weeklyKey);
+    return out;
   }
 
   // wrap the game's writeSave so every local save also schedules a cloud push
@@ -2509,26 +2785,52 @@ requestAnimationFrame(loop);
     return db.collection('users').doc(u.uid).set({
       save:saveData,highScore:highScore,
       updatedAt:firebase.firestore.FieldValue.serverTimestamp()
-    },{merge:true}).then(()=>setStatus('synced ✓','#2ecc71'))
+    },{merge:true}).then(()=>{setStatus('synced ✓','#2ecc71');return pushLeaderboardImpl();})
      .catch(e=>{setStatus('sync error','#ff7676');console.error(e);});
   }
+
+  // public leaderboard doc (separate collection, public-read / owner-write)
+  function pushLeaderboardImpl(){
+    const u=auth.currentUser;if(!u||!saveData.username)return Promise.resolve();
+    return db.collection('leaderboard').doc(u.uid).set({
+      username:saveData.username,
+      bestScore:Math.max(highScore||0,saveData.bestScore||0),
+      kills:saveData.kills||0,
+      highestLevel:saveData.highestLevel||1,
+      coins:saveData.coins||0,
+      updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+    },{merge:true}).catch(e=>console.warn('leaderboard push failed',e));
+  }
+  pushLeaderboard=pushLeaderboardImpl; // expose to game scope
+
+  // query a board; cache so the per-frame menu draw doesn't requery
+  fetchLeaderboard=function(metric){
+    lbCache={metric:metric,rows:[],loading:true,error:null};
+    db.collection('leaderboard').orderBy(metric,'desc').limit(25).get()
+      .then(snap=>{lbCache={metric:metric,rows:snap.docs.map(d=>Object.assign({uid:d.id},d.data())),loading:false,error:null};})
+      .catch(e=>{console.error(e);lbCache={metric:metric,rows:[],loading:false,error:'Could not load leaderboard.'};});
+  };
 
   auth.onAuthStateChanged(async user=>{
     if(user){
       signInBtn.style.display='none';info.style.display='flex';
       emailEl.textContent=user.email;setStatus('syncing…','#ffd24a');
+      lbSignedIn=true;lbUid=user.uid;lbCache={metric:null,rows:[],loading:false,error:null};
       try{
         const snap=await db.collection('users').doc(user.uid).get();
         const data=snap.exists?snap.data():null;
         saveData=mergeSave(saveData,data&&data.save?data.save:null);
+        syncChallengePeriods();
         if(data&&typeof data.highScore==='number'&&data.highScore>highScore){
           highScore=data.highScore;localStorage.setItem('dz_hs',highScore);
         }
         writeLocal();      // persist merged result locally
-        await pushNow();   // and mirror it back to the cloud
+        await pushNow();   // and mirror it back to the cloud (incl. leaderboard)
+        if(!saveData.username)openName(); // first-time players pick a name for the board
       }catch(e){setStatus('sync error','#ff7676');console.error(e);}
     }else{
       signInBtn.style.display='block';info.style.display='none';
+      lbSignedIn=false;lbUid=null;closeName();
     }
   });
 
@@ -2536,7 +2838,7 @@ requestAnimationFrame(loop);
   (function syncVis(){
     const onMenu=(typeof state!=='undefined'&&state===STATE.MENU);
     acct.style.display=onMenu?'block':'none';
-    if(!onMenu)closeModal();
+    if(!onMenu){closeModal();closeName();}
     requestAnimationFrame(syncVis);
   })();
 })();
