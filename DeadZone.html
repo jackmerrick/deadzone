@@ -126,6 +126,20 @@ const CAMPAIGN=[
     {id:'c1m3', name:'Deep Cover',    mapIdx:2, target:'plans',   guards:16, patrols:6, cameras:4,
      intro:'Heavily guarded. Grab the intel. Get out alive.'},
   ]},
+  {title:'CHAPTER 2 — NO MERCY', missions:[
+    {id:'c2m1', name:'No Witnesses',  mapIdx:3, target:'plans',       guards:18, patrols:7, cameras:7, loadout:'silent', noAlarm:true,
+     intro:'GHOST: knife & silenced pistol only. If the alarm is EVER raised, you fail. Steal the intel.'},
+    {id:'c2m2', name:'Decapitation',  mapIdx:0, target:'assassinate', guards:20, patrols:8, cameras:4,
+     intro:'ASSASSINATION: a marked HVT is inside. Eliminate the target, then extract.'},
+    {id:'c2m3', name:'Hot Property',  mapIdx:1, target:'vault',       guards:18, patrols:7, cameras:3, forceAlarm:true,
+     intro:'ALARMED VAULT: the prize is wired. The instant you grab it, the base lights up. Fight your way out.'},
+    {id:'c2m4', name:'Scorched Earth',mapIdx:2, target:'sabotage',    guards:18, patrols:7, cameras:3, forceAlarm:true, escapeTime:45,
+     intro:'SABOTAGE: plant charges on the reactor (trips the alarm) then reach extraction within 45 seconds.'},
+    {id:'c2m5', name:'Double Cross',  mapIdx:1, target:'heist',       guards:20, patrols:8, cameras:5,
+     intro:'HEIST: grab BOTH the intel and the hostage from separate rooms, then extract together.'},
+    {id:'c2m6', name:'Cleaners',      mapIdx:2, target:'exterminate', guards:14, patrols:6, cameras:3, loadout:'heavy',
+     intro:'EXTERMINATION: kill EVERY guard — outside and inside — then extract. Go loud.'},
+  ]},
 ];
 
 let state=STATE.MENU;
@@ -421,6 +435,13 @@ document.addEventListener('keydown',e=>{
 
   // Campaign mode ignores the zombie-only action keys (grenades, build, killstreaks, shop).
   if(camp){if(state===STATE.PLAYING&&(e.key==='y'||e.key==='Y'))cycleWeapon();return;}
+  // Multiplayer: grenade (G), cycle nade (Q), reload (R), swap weapon (Y)
+  if(gameMode==='mp'){if(state===STATE.PLAYING){
+    if(e.key==='g'||e.key==='G')throwGrenade();
+    if(e.key==='q'||e.key==='Q')player.selectedGrenade=player.selectedGrenade==='frag'?'flashbang':'frag';
+    if(e.key==='r'||e.key==='R')mpStartReload();
+    if(e.key==='y'||e.key==='Y')cycleWeapon();
+  }return;}
 
   if(state===STATE.PLAYING){
     if(e.key==='g'||e.key==='G')throwGrenade();
@@ -720,6 +741,19 @@ function shoot(){
   const w=getWeaponStats(player.weapon);
   const cd=w.cd/(perks.doubleTap?2:1);
   if(now-lastShot<cd)return;
+  if(gameMode==='mp'){
+    if(w.melee){lastShot=now;mpMelee(w);return;}
+    if(player.weapon==='rifle'){ // primary = 30-round mag, reload with R, unlimited reserve
+      if(player.reloadT>0)return;
+      if(player.mag<=0){mpStartReload();return;}
+    }
+    lastShot=now;
+    if(player.weapon==='rifle')player.mag--;
+    for(let i=0;i<w.pellets;i++){const a=player.angle+rand(-w.spread,w.spread);bullets.push({x:player.x,y:player.y,vx:Math.cos(a)*w.spd,vy:Math.sin(a)*w.spd,dmg:w.dmg,life:w.life||1.6,color:w.color,fromPlayer:true,team:'blue',br:w.br});}
+    spawnMuzzle(player.x+Math.cos(player.angle)*22,player.y+Math.sin(player.angle)*22,player.angle);addShake(3.5,0.1);
+    if(player.weapon==='rifle'&&player.mag<=0)mpStartReload();
+    return;
+  }
   if(w.melee){lastShot=now;meleeAttack(w);return;}
   if(player.ammo[player.weapon]<=0)return;
   lastShot=now;
@@ -777,6 +811,12 @@ function explodeAt(x,y,radius,dmg,shake){
   enemies.forEach(e=>{if(!e.alive)return;const d=Math.hypot(e.x-x,e.y-y);if(d<radius+e.r){e.hp-=dmg*(1-d/(radius+e.r));if(e.hp<=0)killEnemy(e);}});
 }
 function explodeGrenade(g){
+  if(gameMode==='mp'){ // grenades only thrown by the player (BLUE) → affect RED bots
+    if(g.type==='flashbang'){spawnExplosion(g.x,g.y,8);for(const o of bots){if(o.alive&&o.team==='red'&&Math.hypot(o.x-g.x,o.y-g.y)<240)o.stun=Math.max(o.stun||0,3.5);}return;}
+    spawnExplosion(g.x,g.y,16);addShake(11,0.35);
+    for(const o of bots){if(!o.alive||o.team!=='red')continue;const d=Math.hypot(o.x-g.x,o.y-g.y);if(d<160){o.hp-=120*(1-d/160);o.dmgT=0;if(o.hp<=0)mpKill({fromPlayer:true,team:'blue'},o);}}
+    return;
+  }
   if(g.type==='frag'){explodeAt(g.x,g.y,155,300,13);}
   else if(g.type==='molotov'){spawnExplosion(g.x,g.y,12);firePatches.push({x:g.x,y:g.y,radius:95,timer:6});}
   else if(g.type==='flashbang'){spawnExplosion(g.x,g.y,8);enemies.forEach(e=>{if(!e.alive)return;const d=Math.hypot(e.x-g.x,e.y-g.y);if(d<220){e.stunned=3.5;e.hp-=40;if(e.hp<=0)killEnemy(e);}});}
@@ -997,6 +1037,7 @@ function takeDamage(dmg){
   if(player.invincible>0)return;
   if(player.armourHp>0){const abs=Math.min(player.armourHp,dmg*0.7);player.armourHp-=abs;dmg-=abs;}
   player.hp-=dmg;
+  if(gameMode==='mp'){player.dmgT=0;if(player.hp<=0)mpPlayerDown();return;} // MP: death = respawn, handled separately
   if(player.hp<=0&&!player.lastStand){
     if(perks.quickRevive&&!quickReviveUsed){quickReviveUsed=true;player.hp=30;player.invincible=1.5;addNotif('❤️ Quick Revive — back in action!','#00aaff',3);}
     else enterLastStand();
@@ -1724,7 +1765,7 @@ function startGame(mapIdx){
   addNotif(`DEAD ZONE — Level 1/20${campaignMode?'':' · '+MAPS[fixedMapIdx].name}`,'#e63946',3);
   addNotif('Buy weapons from 🧺 shop  ·  Upgrade at 🔧 workshop','#2ecc71',5);
 }
-function restartGame(){if(gameMode==='campaign'&&mission){startMission(mission.id);return;}startGame(campaignMode?null:fixedMapIdx);}
+function restartGame(){if(gameMode==='mp'){startMultiplayer(mpMode);return;}if(gameMode==='campaign'&&mission){startMission(mission.id);return;}startGame(campaignMode?null:fixedMapIdx);}
 
 // Fold the current run's earnings/stats into the persistent save
 function commitRun(died){
@@ -1740,8 +1781,16 @@ function commitRun(died){
 }
 function gameOver(){
   state=STATE.GAME_OVER;
+  if(gameMode==='campaign'&&!failReason)failReason='You were killed';
   if(score>highScore){highScore=score;localStorage.setItem('dz_hs',highScore);}
   commitRun(true);
+}
+// Campaign mission failed without dying (spotted on a ghost run, timer expired, etc.)
+function missionFailed(reason){
+  if(state!==STATE.PLAYING)return;
+  failReason=reason||'Mission failed';
+  commitRun(true);
+  state=STATE.GAME_OVER; // reuses the GAME_OVER → RETRY/MENU plumbing
 }
 
 function advanceLevel(){
@@ -1784,6 +1833,9 @@ function advanceLevel(){
 let guards=[],cameras=[],objectiveItem=null,extractionZone=null,hostage=null;
 let hasObjective=false,alarm=false,alarmCalmTimer=0,seenNow=false,takedownTarget=null;
 let stealthScene='exterior',doorIn=null,doorOut=null,buildingRect=null,extSnapshot=null,doorCd=0;
+// Chapter-2 objective state (assassinate / heist / sabotage / exterminate + fail outcome)
+let hvt=null,hvtDead=false,hasIntel=false,hasHostage=false,intelItem=null,charges=false;
+let missionTimer=0,intSnapshot=null,enteredOnce=false,failReason='';
 let coverTiles=new Set();           // tiles that are decorative cover (trees/crates/furniture), not structural walls
 let noiseEscalateT=0;               // >0 = a guard is investigating a shot; hits 0 → whole base alerts
 const ALARM_CALM_TIME=8;            // seconds out of sight before the base calms down
@@ -1801,7 +1853,7 @@ function angDiff(a,b){let d=(a-b)%(Math.PI*2);if(d>Math.PI)d-=Math.PI*2;if(d<-Ma
 // Line-of-sight: sample the segment for walls
 function losClear(x0,y0,x1,y1){const steps=Math.ceil(Math.hypot(x1-x0,y1-y0)/16);for(let i=1;i<steps;i++){const t=i/steps;if(isWall(x0+(x1-x0)*t,y0+(y1-y0)*t))return false;}return true;}
 // Does a cone at (x,y) facing ang see the player?
-function coneSees(x,y,ang,range,half){const dx=player.x-x,dy=player.y-y,d=Math.hypot(dx,dy);if(d>range)return false;if(Math.abs(angDiff(Math.atan2(dy,dx),ang))>half)return false;return losClear(x,y,player.x,player.y);}
+function coneSees(x,y,ang,range,half,target){target=target||player;const dx=target.x-x,dy=target.y-y,d=Math.hypot(dx,dy);if(d>range)return false;if(Math.abs(angDiff(Math.atan2(dy,dx),ang))>half)return false;return losClear(x,y,target.x,target.y);}
 
 // ── Map geometry helpers ────────────────────────────────────────────────────
 function blankMap(){return Array.from({length:MAP_H},(_,y)=>Array.from({length:MAP_W},(_,x)=>(x===0||y===0||x===MAP_W-1||y===MAP_H-1)?1:0));}
@@ -1862,6 +1914,12 @@ function layoutInterior(){
   let far=[insTx,insTy],fd=-1;reach.forEach(([x,y])=>{const d=Math.hypot(x-insTx,y-insTy);if(d>fd){fd=d;far=[x,y];}});
   objectiveItem={x:tcx(far[0]),y:tcx(far[1])};
   if(mission.target==='hostage')hostage={x:objectiveItem.x,y:objectiveItem.y};
+  if(mission.target==='heist'){
+    // two objectives: intel at the far room, hostage in the room maximising distance from BOTH spawn and intel
+    intelItem={x:objectiveItem.x,y:objectiveItem.y};
+    let h=[insTx,insTy],hd=-1;reach.forEach(([x,y])=>{const d=Math.min(Math.hypot(x-insTx,y-insTy),Math.hypot(x-far[0],y-far[1]));if(d>hd){hd=d;h=[x,y];}});
+    hostage={x:tcx(h[0]),y:tcx(h[1])};
+  }
   return {x:tcx(insTx),y:tcx(insTy),reach};
 }
 
@@ -1904,24 +1962,68 @@ function buildInterior(m){
   const ig=Math.max(3,Math.round(m.guards*0.7)),ip=Math.max(1,Math.round(m.patrols*0.6));
   guards=placeGuards(ig,ip,r.reach,r.x,r.y,200);
   cameras=placeCameras(Math.max(1,m.cameras-1),r.reach,r.x,r.y);
+  // Assassination: mark the guard farthest from the entrance as the HVT (until killed)
+  if(m.target==='assassinate'&&!hvtDead){
+    let best=null,bd=-1;guards.forEach(g=>{const d=Math.hypot(g.x-r.x,g.y-r.y);if(d>bd){bd=d;best=g;}});
+    if(best){best.isHVT=true;hvt=best;}
+  }
   return r;
 }
 function snapshotScene(){return {worldMap,mapCfg,debris,guards,cameras,doorIn,doorOut,buildingRect,extractionZone,alarm,alarmCalmTimer,coverTiles};}
 function applyScene(s){worldMap=s.worldMap;mapCfg=s.mapCfg;debris=s.debris;guards=s.guards;cameras=s.cameras;doorIn=s.doorIn;doorOut=s.doorOut;buildingRect=s.buildingRect;extractionZone=s.extractionZone;alarm=s.alarm;alarmCalmTimer=s.alarmCalmTimer;coverTiles=s.coverTiles;}
 function enterInterior(){
   extSnapshot=snapshotScene();
-  stealthScene='interior';alarm=false;alarmCalmTimer=0;noiseEscalateT=0;doorCd=0.6;
-  const r=buildInterior(mission);player.x=r.x;player.y=r.y;bullets=[];
-  addNotif('Inside the building — find the '+(mission.target==='hostage'?'hostage':'intel'),'#ffd24a',4);
+  const wasAlarm=alarm;
+  stealthScene='interior';noiseEscalateT=0;doorCd=0.6;enteredOnce=true;
+  if(mission.target==='exterminate'&&intSnapshot){ // re-enter: keep the interior we already fought through
+    applyScene(intSnapshot);player.x=doorOut.x;player.y=doorOut.y-TILE;
+  } else {
+    const r=buildInterior(mission);player.x=r.x;player.y=r.y;
+  }
+  alarm=wasAlarm;alarmCalmTimer=wasAlarm?ALARM_CALM_TIME:0;bullets=[];
+  const goal=mission.target==='heist'?'the intel & the hostage':mission.target==='assassinate'?'the HVT':mission.target==='sabotage'?'the reactor':mission.target==='exterminate'?'and clear the guards':mission.target==='vault'?'the vault':mission.target==='hostage'?'the hostage':'the intel';
+  addNotif('Inside the building — find '+goal,'#ffd24a',4);
 }
 function exitToExterior(){
+  const wasAlarm=alarm;
+  if(mission.target==='exterminate')intSnapshot=snapshotScene(); // preserve interior kills for re-entry
   applyScene(extSnapshot);stealthScene='exterior';noiseEscalateT=0;doorCd=0.6;
   player.x=doorIn.x;player.y=doorIn.y+TILE;bullets=[];
-  if(hasObjective&&mission.target==='hostage'&&hostage){hostage.x=player.x;hostage.y=player.y+30;}
+  if(wasAlarm){alarm=true;alarmCalmTimer=ALARM_CALM_TIME;} // a tripped alarm follows you outside
+  const carryH=(mission.target==='hostage'&&hasObjective)||(mission.target==='heist'&&hasHostage);
+  if(carryH&&hostage){hostage.x=player.x;hostage.y=player.y+30;}
   addNotif(hasObjective?'Back outside — reach the extraction point':'Back in the yard','#2ecc71',4);
 }
 
-function triggerAlarm(){alarmCalmTimer=ALARM_CALM_TIME;if(!alarm){alarm=true;noiseEscalateT=0;guards.forEach(g=>g.investigate=false);addNotif('⚠ DETECTED — the base is on alert!','#ff4444',3);addShake(8,0.3);}}
+function triggerAlarm(){
+  if(mission&&mission.noAlarm&&!alarm){alarm=true;missionFailed('Spotted — no witnesses allowed');return;} // ghost run: detection = instant fail
+  alarmCalmTimer=ALARM_CALM_TIME;if(!alarm){alarm=true;noiseEscalateT=0;guards.forEach(g=>g.investigate=false);addNotif('⚠ DETECTED — the base is on alert!','#ff4444',3);addShake(8,0.3);}}
+// Objective bookkeeping for the new mission types
+function allGuardsDead(){
+  if(mission.target!=='exterminate'||!enteredOnce)return false;
+  const ext=stealthScene==='exterior'?guards:(extSnapshot?extSnapshot.guards:[]);
+  const intr=stealthScene==='interior'?guards:(intSnapshot?intSnapshot.guards:[]);
+  return ext.every(g=>!g.alive)&&intr.every(g=>!g.alive);
+}
+function guardsLeft(){
+  const ext=stealthScene==='exterior'?guards:(extSnapshot?extSnapshot.guards:[]);
+  const intr=stealthScene==='interior'?guards:(intSnapshot?intSnapshot.guards:[]);
+  return ext.filter(g=>g.alive).length+intr.filter(g=>g.alive).length;
+}
+function objectiveCollected(){
+  switch(mission.target){
+    case 'heist': return hasIntel&&hasHostage;
+    case 'assassinate': return hvtDead;
+    case 'exterminate': return allGuardsDead();
+    default: return hasObjective; // plans/hostage/vault/sabotage use hasObjective directly
+  }
+}
+// Side-effects the instant a grabbed objective is taken (vault breach / charge plant)
+function onObjectiveTaken(){
+  if(mission.forceAlarm)triggerAlarm();
+  if(mission.target==='sabotage'){charges=true;missionTimer=mission.escapeTime||45;addNotif('💣 Charges planted — RUN! Escape before the timer hits 0','#ff5533',5);}
+  else if(mission.target==='vault'){addNotif('🔓 Vault breached — ALARM! Get out hot','#ff5533',5);}
+}
 // A loud (missed) shot: the nearest guard investigates; if unresolved, the base fully alerts after 5s.
 function raiseNoise(x,y){
   if(alarm)return;
@@ -1995,10 +2097,25 @@ function updateStealth(dt){
     if(stealthScene==='exterior'&&doorIn&&dist(player,doorIn)<34){enterInterior();return;}
     if(stealthScene==='interior'&&doorOut&&dist(player,doorOut)<34){exitToExterior();return;}
   }
-  // Objective pickup (lives inside the building)
-  if(!hasObjective&&stealthScene==='interior'&&objectiveItem&&dist(player,objectiveItem)<34){hasObjective=true;addNotif(mission.target==='hostage'?'🧍 Hostage freed — escort them out!':'📁 Intel secured — get out!','#ffd700',4);}
-  // Hostage follows once freed
-  if(hasObjective&&mission.target==='hostage'&&hostage){const dx=player.x-hostage.x,dy=player.y-hostage.y,d=Math.hypot(dx,dy);if(d>58){const mx=dx/d,my=dy/d,s=175*dt;if(!isWall(hostage.x+mx*s,hostage.y))hostage.x+=mx*s;if(!isWall(hostage.x,hostage.y+my*s))hostage.y+=my*s;}}
+  // ── Objective handling (per mission type) ───────────────────────────────────
+  if(stealthScene==='interior'){
+    if(mission.target==='heist'){
+      if(!hasIntel&&intelItem&&dist(player,intelItem)<34){hasIntel=true;addNotif('📁 Intel secured — now grab the hostage','#ffd700',4);}
+      if(!hasHostage&&hostage&&dist(player,hostage)<34){hasHostage=true;addNotif('🧍 Hostage freed — escort them out!','#ffd700',4);}
+    } else if(!hasObjective&&objectiveItem&&mission.target!=='assassinate'&&mission.target!=='exterminate'&&dist(player,objectiveItem)<34){
+      hasObjective=true;
+      addNotif(mission.target==='hostage'?'🧍 Hostage freed — escort them out!':mission.target==='vault'?'💰 Vault grabbed!':mission.target==='sabotage'?'💣 Charges placed!':'📁 Intel secured — get out!','#ffd700',4);
+      onObjectiveTaken();
+    }
+  }
+  // Assassinate / heist / exterminate flip the canonical "ready to extract" flag when their condition is met
+  if(mission.target==='assassinate'&&hvt&&!hvt.alive&&!hvtDead)hvtDead=true;
+  if(!hasObjective&&objectiveCollected()){hasObjective=true;addNotif(mission.target==='assassinate'?'🎯 Target eliminated — extract now!':mission.target==='exterminate'?'☠ Compound cleared — extract now!':'✓ Objectives complete — extract!','#ffd700',4);}
+  // Sabotage escape countdown
+  if(missionTimer>0){missionTimer-=dt;if(missionTimer<=0){missionTimer=0;missionFailed('Out of time — the charges blew with you inside');return;}}
+  // Hostage / heist escort follows once freed
+  const escort=(mission.target==='hostage'&&hasObjective)||(mission.target==='heist'&&hasHostage);
+  if(escort&&hostage){const dx=player.x-hostage.x,dy=player.y-hostage.y,d=Math.hypot(dx,dy);if(d>58){const mx=dx/d,my=dy/d,s=175*dt;if(!isWall(hostage.x+mx*s,hostage.y))hostage.x+=mx*s;if(!isWall(hostage.x,hostage.y+my*s))hostage.y+=my*s;}}
   // Extraction outside, with the objective = mission complete
   if(hasObjective&&stealthScene==='exterior'&&extractionZone&&dist(player,extractionZone)<44)missionComplete();
 }
@@ -2021,13 +2138,16 @@ function startMission(id){
   resetUpgrades();
   // Reset stealth state
   hasObjective=false;alarm=false;alarmCalmTimer=0;seenNow=false;takedownTarget=null;hostage=null;objectiveItem=null;extSnapshot=null;stealthScene='exterior';doorCd=0;noiseEscalateT=0;
+  // Reset Chapter-2 objective/fail state
+  hvt=null;hvtDead=false;hasIntel=false;hasHostage=false;intelItem=null;charges=false;missionTimer=0;intSnapshot=null;enteredOnce=false;failReason='';
   // Base has power: full vision, no flashlight battery / no zombie map objects.
   lightsOn=true;lightsSwitch=null;buyStationPos=null;workshopPos=null;perkMachines=[];barricades=[];
   // Build the compound FIRST so the map exists before the player safe-spawns on it.
   const ins=buildExterior(m);
   initPlayer();
-  // Stealth loadout: silenced pistol (quiet) + a rifle as a loud panic option.
-  player.weapons=['knife','pistol','rifle'];player.weapon='pistol';player.ammo.rifle=120;
+  // Stealth loadout: knife + silenced pistol; rifle added unless the mission is silent-only.
+  player.weapons=['knife','pistol'];player.weapon='pistol';
+  if(m.loadout!=='silent'){player.weapons.push('rifle');player.ammo.rifle=(m.loadout==='heavy')?260:120;}
   player.x=ins.x;player.y=ins.y;
   // Show the mission briefing (tactical preview + countdown) before play begins.
   briefT=0;briefPhase='video';countdownT=5;briefRegion=null;
@@ -2037,7 +2157,10 @@ function beginMissionPlay(){
   state=STATE.PLAYING;gameStartTime=performance.now()/1000;
   addNotif('MISSION: '+mission.name,'#7fd4ff',3);
   addNotif(mission.intro,'#cfe6ff',5);
-  addNotif('Enter the house · pistol silenced · [Enter] behind a guard = takedown','#9aa0a6',6);
+  const tip=mission.target==='exterminate'?'Go loud — rifle stocked · clear every guard inside & out':
+            mission.loadout==='silent'?'SILENT: knife & silenced pistol only · [Enter] behind a guard = takedown':
+            'Pistol silenced · [Enter] behind a guard = takedown · rifle = loud panic';
+  addNotif(tip,'#9aa0a6',6);
 }
 
 // ── Stealth drawing ─────────────────────────────────────────────────────────
@@ -2061,14 +2184,20 @@ function drawStealth(camX,camY){
     ctx.strokeStyle=hasObjective?`rgba(46,204,113,${p})`:'rgba(46,204,113,0.3)';ctx.lineWidth=3;ctx.strokeRect(sx-26,sy-26,52,52);
     ctx.beginPath();ctx.moveTo(sx,sy-10);ctx.lineTo(sx,sy+10);ctx.moveTo(sx-10,sy);ctx.lineTo(sx+10,sy);ctx.stroke();
     ctx.fillStyle=hasObjective?'#2ecc71':'#1f6e3a';ctx.font='bold 11px Courier New';ctx.textAlign='center';ctx.fillText('EXTRACT',sx,sy-34);}
-  // Objective (interior only)
-  if(!hasObjective&&stealthScene==='interior'&&objectiveItem){const sx=objectiveItem.x-camX,sy=objectiveItem.y-camY,p=Math.sin(t*4)*0.4+0.6;
-    ctx.shadowColor='#ffd700';ctx.shadowBlur=20*p;
-    if(mission.target==='hostage'){ctx.fillStyle='#ffcc88';ctx.beginPath();ctx.arc(sx,sy,12,0,Math.PI*2);ctx.fill();ctx.fillStyle='#221';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('!',sx,sy+4);}
-    else{ctx.fillStyle='#caa14a';ctx.fillRect(sx-11,sy-8,22,16);ctx.fillStyle='#3a2e10';ctx.fillRect(sx-3,sy-8,6,5);}
-    ctx.shadowBlur=0;ctx.fillStyle='#ffd700';ctx.font='bold 10px Courier New';ctx.textAlign='center';ctx.fillText(mission.target==='hostage'?'HOSTAGE':'INTEL',sx,sy-18);}
-  // Hostage escort token
-  if(hasObjective&&mission.target==='hostage'&&hostage){const sx=hostage.x-camX,sy=hostage.y-camY;ctx.fillStyle='rgba(0,0,0,0.35)';ctx.beginPath();ctx.ellipse(sx+2,sy+4,9,5,0,0,Math.PI*2);ctx.fill();ctx.fillStyle='#ffcc88';ctx.beginPath();ctx.arc(sx,sy,11,0,Math.PI*2);ctx.fill();}
+  // Objective marker(s) — interior only, per mission type
+  const drawCrate=(it,label)=>{const sx=it.x-camX,sy=it.y-camY,p=Math.sin(t*4)*0.4+0.6;ctx.shadowColor='#ffd700';ctx.shadowBlur=20*p;ctx.fillStyle='#caa14a';ctx.fillRect(sx-11,sy-8,22,16);ctx.fillStyle='#3a2e10';ctx.fillRect(sx-3,sy-8,6,5);ctx.shadowBlur=0;ctx.fillStyle='#ffd700';ctx.font='bold 10px Courier New';ctx.textAlign='center';ctx.fillText(label,sx,sy-18);};
+  const drawPerson=(it,label)=>{const sx=it.x-camX,sy=it.y-camY,p=Math.sin(t*4)*0.4+0.6;ctx.shadowColor='#ffd700';ctx.shadowBlur=20*p;ctx.fillStyle='#ffcc88';ctx.beginPath();ctx.arc(sx,sy,12,0,Math.PI*2);ctx.fill();ctx.fillStyle='#221';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('!',sx,sy+4);ctx.shadowBlur=0;ctx.fillStyle='#ffd700';ctx.font='bold 10px Courier New';ctx.fillText(label,sx,sy-18);};
+  if(stealthScene==='interior'){
+    if(mission.target==='heist'){
+      if(!hasIntel&&intelItem)drawCrate(intelItem,'INTEL');
+      if(!hasHostage&&hostage)drawPerson(hostage,'HOSTAGE');
+    } else if(!hasObjective&&objectiveItem&&mission.target!=='assassinate'&&mission.target!=='exterminate'){
+      if(mission.target==='hostage')drawPerson(objectiveItem,'HOSTAGE');
+      else drawCrate(objectiveItem,mission.target==='vault'?'VAULT':mission.target==='sabotage'?'REACTOR':'INTEL');
+    }
+  }
+  // Hostage escort token (hostage + heist, once freed)
+  if(((mission.target==='hostage'&&hasObjective)||(mission.target==='heist'&&hasHostage))&&hostage){const sx=hostage.x-camX,sy=hostage.y-camY;ctx.fillStyle='rgba(0,0,0,0.35)';ctx.beginPath();ctx.ellipse(sx+2,sy+4,9,5,0,0,Math.PI*2);ctx.fill();ctx.fillStyle='#ffcc88';ctx.beginPath();ctx.arc(sx,sy,11,0,Math.PI*2);ctx.fill();}
   // Cameras (destroyable)
   cameras.forEach(c=>{const sx=c.x-camX,sy=c.y-camY;
     if(!c.destroyed)drawCone(sx,sy,c.angle,CAM_RANGE,CAM_HALF,alarm?'#ff4444':'#3fa9ff',0.10);
@@ -2086,10 +2215,12 @@ function drawStealth(camX,camY){
     ctx.fillStyle='#222';ctx.fillRect(6,-3,16,6);
     ctx.fillStyle='#ccb89a';ctx.beginPath();ctx.arc(3,0,5,0,Math.PI*2);ctx.fill();
     ctx.restore();
+    if(g.isHVT){const pr=18+Math.sin(t*5)*3;ctx.save();ctx.globalAlpha=0.85;ctx.strokeStyle='#ff4444';ctx.lineWidth=2;ctx.beginPath();ctx.arc(sx,sy,pr,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;ctx.fillStyle='#ff4444';ctx.font='bold 10px Courier New';ctx.textAlign='center';ctx.fillText('◆ HVT',sx,sy-26);ctx.restore();}
     if(takedownTarget===g){ctx.fillStyle='#fff';ctx.font='bold 11px Courier New';ctx.textAlign='center';ctx.fillText('[Enter] Takedown',sx,sy-20);}});
 }
 
 function drawStealthHUD(){
+  const t=performance.now()/1000;
   // Alarm banner (top-centre)
   const bw=300,bx=W/2-bw/2,investigating=!alarm&&noiseEscalateT>0;
   ctx.fillStyle=alarm?'rgba(120,0,0,0.85)':investigating?'rgba(120,70,0,0.85)':'rgba(0,40,0,0.7)';ctx.fillRect(bx,14,bw,30);
@@ -2098,17 +2229,38 @@ function drawStealthHUD(){
   ctx.fillText(alarm?'⚠ ALARM — BASE ALERTED':investigating?'⚠ GUARD INVESTIGATING':'● UNDETECTED',W/2,34);
   if(alarm){ctx.fillStyle='#ffbb99';ctx.font='9px Courier New';ctx.fillText(seenNow?'Get out of sight to lose them':`Hidden — ${Math.ceil(alarmCalmTimer)}s to clear`,W/2,57);}
   else if(investigating){ctx.fillStyle='#ffd9a0';ctx.font='9px Courier New';ctx.fillText(`Whole base alerts in ${Math.ceil(noiseEscalateT)}s`,W/2,57);}
-  // Objective tracker (top-left) — context aware
-  let step1,done1;
-  if(!hasObjective&&stealthScene==='exterior'){step1='Enter the target building';done1=false;}
-  else if(!hasObjective){step1=mission.target==='hostage'?'Reach the hostage':'Steal the intel';done1=false;}
-  else {step1=mission.target==='hostage'?'Hostage secured':'Intel secured';done1=true;}
-  ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(14,14,256,58);ctx.strokeStyle='#234';ctx.lineWidth=1;ctx.strokeRect(14,14,256,58);
+  // Escape countdown (sabotage)
+  if(missionTimer>0){const flash=missionTimer<10&&Math.sin(t*10)>0;ctx.fillStyle=flash?'rgba(190,0,0,0.95)':'rgba(120,0,0,0.9)';ctx.fillRect(W/2-92,66,184,28);ctx.strokeStyle='#ff5533';ctx.lineWidth=2;ctx.strokeRect(W/2-92,66,184,28);ctx.fillStyle='#ffce99';ctx.font='bold 15px Courier New';ctx.textAlign='center';ctx.fillText('💣 ESCAPE: '+Math.ceil(missionTimer)+'s',W/2,85);}
+  // Objective tracker (top-left) — per mission type
+  const tgt=mission.target,heist=tgt==='heist',boxH=heist?92:76;
+  ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(14,14,260,boxH);ctx.strokeStyle='#234';ctx.lineWidth=1;ctx.strokeRect(14,14,260,boxH);
   ctx.textAlign='left';ctx.fillStyle='#7fd4ff';ctx.font='bold 11px Courier New';ctx.fillText('MISSION: '+mission.name,22,32);
-  ctx.fillStyle=done1?'#2ecc71':'#ddd';ctx.font='10px Courier New';ctx.fillText((done1?'✓ ':'• ')+step1,22,48);
-  ctx.fillStyle=hasObjective?'#ffd700':'#666';ctx.fillText((hasObjective?'➤ ':'• ')+'Reach extraction',22,64);
+  ctx.font='10px Courier New';let ly=48;
+  const line=(txt,done,active)=>{ctx.fillStyle=done?'#2ecc71':active?'#ffd700':'#ddd';ctx.fillText((done?'✓ ':active?'➤ ':'• ')+txt,22,ly);ly+=16;};
+  if(heist){
+    line('Steal the intel',hasIntel,!hasIntel);
+    line('Free the hostage',hasHostage,hasIntel&&!hasHostage);
+    line('Reach extraction',false,hasObjective);
+  } else if(tgt==='exterminate'){
+    line('Eliminate all guards ('+guardsLeft()+' left)',allGuardsDead(),!hasObjective);
+    line('Reach extraction',false,hasObjective);
+  } else if(tgt==='assassinate'){
+    line(hvtDead?'HVT eliminated':'Eliminate the HVT',hvtDead,!hvtDead);
+    line('Reach extraction',false,hasObjective);
+  } else {
+    const lbl=tgt==='hostage'?'Reach the hostage':tgt==='vault'?'Grab the vault':tgt==='sabotage'?'Plant the charges':'Steal the intel';
+    const dlbl=tgt==='hostage'?'Hostage secured':tgt==='vault'?'Vault grabbed':tgt==='sabotage'?'Charges planted':'Intel secured';
+    line(hasObjective?dlbl:lbl,hasObjective,!hasObjective);
+    line('Reach extraction',false,hasObjective);
+  }
   // Guidance arrow toward the current goal
-  const goal=hasObjective?(stealthScene==='exterior'?extractionZone:doorOut):(stealthScene==='exterior'?doorIn:objectiveItem);
+  let goal;
+  if(hasObjective)goal=stealthScene==='exterior'?extractionZone:doorOut;
+  else if(stealthScene==='exterior')goal=doorIn;
+  else if(heist)goal=!hasIntel?intelItem:hostage;
+  else if(tgt==='assassinate')goal=(hvt&&hvt.alive)?hvt:doorOut;
+  else if(tgt==='exterminate')goal=guards.find(g=>g.alive)||doorOut;
+  else goal=objectiveItem;
   if(goal){const a=Math.atan2(goal.y-player.y,goal.x-player.x);ctx.save();ctx.translate(W/2,H-96);ctx.rotate(a);ctx.fillStyle='rgba(255,215,0,0.85)';ctx.beginPath();ctx.moveTo(28,0);ctx.lineTo(12,-8);ctx.lineTo(12,8);ctx.closePath();ctx.fill();ctx.restore();}
   // Compact health + weapon readout (bottom-left)
   const hpR=clamp(player.hp/player.maxHp,0,1);
@@ -2123,9 +2275,10 @@ function drawStealthHUD(){
 
 function drawMissionComplete(){
   const nxt=nextMission(mission.id);
+  const outcome={hostage:'Hostage extracted',heist:'Intel & hostage extracted',assassinate:'Target eliminated',vault:'Vault emptied',sabotage:'Charges planted — clean getaway',exterminate:'Compound wiped out'}[mission.target]||'Intel secured';
   drawOverlay('MISSION COMPLETE','#2ecc71',
     [{text:mission.name,col:'#fff',font:'bold 22px Courier New'},
-     {text:mission.target==='hostage'?'Hostage extracted':'Intel secured',col:'#888',font:'14px Courier New'},
+     {text:outcome,col:'#888',font:'14px Courier New'},
      {text:nxt?'Next mission unlocked':'Chapter cleared!',col:'#ffd700',font:'13px Courier New'}],
     {label:nxt?'NEXT':'MENU',col:'#1a5a2a',hov:'#2ecc71',border:'#2ecc71'},
     {label:'MENU',col:'#111',hov:'#333'});
@@ -2351,6 +2504,7 @@ function drawMenu(){
 function drawMainMenu(){
   if(menuView==='campaign')drawCampaignSelect();
   else if(menuView==='zombies')drawZombiesMenu();
+  else if(menuView==='multiplayer')drawMultiplayerSelect();
   else drawModeTiles();
 }
 
@@ -2373,34 +2527,56 @@ function drawBigTile(x,y,w,h,title,sub,desc,accent,bg,fn){
 
 function drawModeTiles(){
   const r=rankFor(saveData.kills);
-  ctx.fillStyle=C.GOLD;ctx.font=mFont(14,'bold');ctx.textAlign='center';ctx.fillText('CHOOSE YOUR OPERATION',W/2,190);
-  ctx.fillStyle=r.color;ctx.font=mFont(12,'bold');ctx.fillText(`RANK: ${r.name.toUpperCase()}  ·  ${saveData.kills} KILLS  ·  🪙 ${saveData.coins}`,W/2,214);
+  ctx.fillStyle=C.GOLD;ctx.font=mFont(14,'bold');ctx.textAlign='center';ctx.fillText('CHOOSE YOUR OPERATION',W/2,184);
+  ctx.fillStyle=r.color;ctx.font=mFont(12,'bold');ctx.fillText(`RANK: ${r.name.toUpperCase()}  ·  ${saveData.kills} KILLS  ·  🪙 ${saveData.coins}`,W/2,206);
   const done=saveData.campaignDone.length,total=CAMPAIGN.flatMap(c=>c.missions).length;
-  const tw=Math.min(320,(W-140)/2),th=250,g=40,totalW=tw*2+g,x0=W/2-totalW/2,ty=250;
-  drawBigTile(x0,ty,tw,th,'CAMPAIGN','STEALTH OPS',`Infiltrate · ${done}/${total} missions done`,'#3fa9ff','#0a1822',()=>{menuView='campaign';});
-  drawBigTile(x0+tw+g,ty,tw,th,'ZOMBIES','WAVE SURVIVAL','20 levels · 5 maps · bosses','#e63946','#1a0808',()=>{menuView='zombies';});
+  const tw=Math.min(300,(W-160)/3),th=260,g=28,totalW=tw*3+g*2,x0=W/2-totalW/2,ty=240;
+  drawBigTile(x0,           ty,tw,th,'CAMPAIGN',  'STEALTH OPS',  `Infiltrate · ${done}/${total} done`, '#3fa9ff','#0a1822',()=>{menuView='campaign';});
+  drawBigTile(x0+tw+g,      ty,tw,th,'ZOMBIES',   'WAVE SURVIVAL','20 levels · 5 maps',                 '#e63946','#1a0808',()=>{menuView='zombies';});
+  drawBigTile(x0+(tw+g)*2,  ty,tw,th,'MULTIPLAYER','BOT PvP',     '4v4 · objective modes',              '#ffd24a','#1a1508',()=>{menuView='multiplayer';});
+}
+function drawMultiplayerSelect(){
+  backButton();
+  ctx.fillStyle=C.GOLD;ctx.shadowColor=C.GOLD;ctx.shadowBlur=14;ctx.font=mFont(24,'bold');ctx.textAlign='center';ctx.fillText('MULTIPLAYER',W/2,176);ctx.shadowBlur=0;
+  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(11);ctx.fillText('You + allied bots (BLUE) vs enemy bots (RED). Respawns on.',W/2,200);
+  const cards=[['tdm','TEAM DEATHMATCH'],['dom','DOMINATION'],['hp','HARDPOINT'],['ctf','CAPTURE THE FLAG']];
+  const cw=Math.min(540,W-120),ch=64,cx=W/2-cw/2;let y=232;
+  cards.forEach(([id,name])=>{
+    const t=hoverAmt('mp_'+id,mHov(cx,y,cw,ch)),hov=t>0.5;
+    panel(cx,y,cw,ch,{r:10,top:mix(C.PANEL_HI,'#2a2415',t),bottom:C.PANEL,border:mix(C.BORDER,C.GOLD,t),lw:1+t});
+    ctx.textAlign='left';ctx.fillStyle=hov?C.GOLD:C.TEXT;ctx.font=mFont(18,'bold');ctx.fillText(name,cx+18,y+28);
+    ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(10);ctx.fillText(MP_MODES[id].desc,cx+18,y+48);
+    ctx.textAlign='right';ctx.fillStyle=hov?C.GOLD:C.TEXT_FAINT;ctx.font=mFont(11,'bold');ctx.fillText(hov?'▶ PLAY':'first to '+MP_MODES[id].limit,cx+cw-16,y+38);
+    mReg(cx,y,cw,ch,()=>startMultiplayer(id));
+    y+=ch+12;
+  });
 }
 
+const MISSION_TAG={plans:'STEAL INTEL',hostage:'RESCUE',assassinate:'ASSASSINATE',vault:'SMASH & GRAB',sabotage:'SABOTAGE',heist:'HEIST',exterminate:'EXTERMINATE'};
+function missionTag(m){let s=MISSION_TAG[m.target]||'INFILTRATE';if(m.noAlarm)s+=' · NO ALARM';if(m.escapeTime)s+=' · TIMED';return s;}
 function drawCampaignSelect(){
   backButton();
-  ctx.fillStyle=C.BLUE;ctx.shadowColor=C.BLUE;ctx.shadowBlur=14;ctx.font=mFont(24,'bold');ctx.textAlign='center';ctx.fillText('STEALTH OPS',W/2,186);ctx.shadowBlur=0;
-  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(12);ctx.fillText('Infiltrate the base, secure the objective, and reach extraction unseen.',W/2,210);
-  let y=246;
+  ctx.fillStyle=C.BLUE;ctx.shadowColor=C.BLUE;ctx.shadowBlur=14;ctx.font=mFont(22,'bold');ctx.textAlign='center';ctx.fillText('STEALTH OPS',W/2,162);ctx.shadowBlur=0;
+  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(11);ctx.fillText('Infiltrate the base, secure the objective, and reach extraction.',W/2,184);
+  let y=204;
+  const rw=Math.min(540,W-80),rh=44,rx=W/2-rw/2;
   CAMPAIGN.forEach(ch=>{
-    ctx.fillStyle=C.BLUE_SOFT;ctx.font=mFont(14,'bold');ctx.textAlign='center';ctx.fillText(ch.title,W/2,y);y+=10;
+    ctx.fillStyle=C.BLUE_SOFT;ctx.font=mFont(13,'bold');ctx.textAlign='center';ctx.fillText(ch.title,W/2,y+4);y+=22;
     ch.missions.forEach((m,i)=>{
       const unlocked=missionUnlocked(ch.missions,i),done=saveData.campaignDone.includes(m.id);
-      const rw=Math.min(560,W-80),rh=54,rx=W/2-rw/2,ry=y+8,t=unlocked?hoverAmt('mission_'+m.id,mHov(rx,ry,rw,rh)):0,hov=t>0.5;
-      panel(rx,ry,rw,rh,{r:8,top:done?'#10301f':(unlocked?mix('#101820','#16303d',t):'#0c0c0e'),bottom:done?'#0a2014':(unlocked?'#0c141c':'#070708'),border:done?C.GREEN:(unlocked?mix('#2c4a5e',C.BLUE_SOFT,t):'#222'),lw:done||unlocked?1:1});
-      ctx.textAlign='center';ctx.font=mFont(17);ctx.fillStyle=done?C.GREEN:(unlocked?C.BLUE:C.TEXT_FAINT);ctx.fillText(done?'✓':(unlocked?'▶':'🔒'),rx+28,ry+34);
-      ctx.textAlign='left';ctx.fillStyle=unlocked?C.TEXT:C.TEXT_FAINT;ctx.font=mFont(14,'bold');ctx.fillText(m.name,rx+54,ry+24);
-      ctx.fillStyle=unlocked?C.TEXT_DIM:'#444';ctx.font=mFont(10);ctx.fillText(unlocked?m.intro:'Complete the previous mission to unlock.',rx+54,ry+42);
-      ctx.textAlign='right';ctx.fillStyle='#7a8a99';ctx.font=mFont(10);ctx.fillText(`${MAPS[m.mapIdx].name} · ${m.guards} guards`,rx+rw-14,ry+22);
-      ctx.fillStyle=done?C.GREEN:(unlocked?C.GOLD:C.TEXT_FAINT);ctx.fillText(done?(hov?'▶ REPLAY':'✓ DONE · REPLAY'):(unlocked?'CLICK TO START':'LOCKED'),rx+rw-14,ry+40);
+      const ry=y,t=unlocked?hoverAmt('mission_'+m.id,mHov(rx,ry,rw,rh)):0,hov=t>0.5;
+      panel(rx,ry,rw,rh,{r:8,top:done?'#10301f':(unlocked?mix('#101820','#16303d',t):'#0c0c0e'),bottom:done?'#0a2014':(unlocked?'#0c141c':'#070708'),border:done?C.GREEN:(unlocked?mix('#2c4a5e',C.BLUE_SOFT,t):'#222'),lw:1});
+      // left: status icon + name + objective tag
+      ctx.textAlign='center';ctx.font=mFont(15);ctx.fillStyle=done?C.GREEN:(unlocked?C.BLUE:C.TEXT_FAINT);ctx.fillText(done?'✓':(unlocked?'▶':'🔒'),rx+24,ry+28);
+      ctx.textAlign='left';ctx.fillStyle=unlocked?C.TEXT:C.TEXT_FAINT;ctx.font=mFont(13,'bold');ctx.fillText(m.name,rx+46,ry+20);
+      ctx.fillStyle=unlocked?'#7fa6c0':'#444';ctx.font=mFont(9);ctx.fillText(unlocked?missionTag(m):'Locked — finish the previous mission',rx+46,ry+35);
+      // right: map · guards + status
+      ctx.textAlign='right';ctx.fillStyle='#7a8a99';ctx.font=mFont(9);ctx.fillText(`${MAPS[m.mapIdx].name} · ${m.guards} guards`,rx+rw-14,ry+20);
+      ctx.fillStyle=done?C.GREEN:(unlocked?C.GOLD:C.TEXT_FAINT);ctx.font=mFont(9,'bold');ctx.fillText(done?(hov?'▶ REPLAY':'✓ DONE'):(unlocked?(hov?'▶ START':'CLICK TO START'):'LOCKED'),rx+rw-14,ry+35);
       if(unlocked)mReg(rx,ry,rw,rh,()=>startMission(m.id));
-      y+=rh+10;
+      y+=rh+7;
     });
-    y+=12;
+    y+=10;
   });
 }
 
@@ -2632,7 +2808,9 @@ function drawOverlay(title,col,lines,b1,b2){
   [b1,b2].forEach((b,i)=>{if(!b)return;const bx=W/2+(i===0?-130:10),hov=mouse.x>bx&&mouse.x<bx+120&&mouse.y>by&&mouse.y<by+44;ctx.fillStyle=hov?b.hov:b.col;ctx.fillRect(bx,by,120,44);ctx.strokeStyle=b.border||'#555';ctx.lineWidth=1;ctx.strokeRect(bx,by,120,44);ctx.fillStyle='#fff';ctx.font='bold 13px Courier New';ctx.textAlign='center';ctx.fillText(b.label,bx+60,by+26);});
   return by;
 }
-function drawGameOver(){drawOverlay('GAME OVER','#e63946',[{text:`SCORE: ${score}`,col:'#fff',font:'bold 22px Courier New'},{text:`BEST: ${highScore}`,col:'#ffdd00',font:'16px Courier New'},{text:`Level ${globalLevel}/20  ·  £${currency}`,col:'#666',font:'12px Courier New'}],{label:'RETRY',col:'#8a1010',hov:'#e63946',border:'#e63946'},{label:'MENU',col:'#111',hov:'#333'});}
+function drawGameOver(){
+  if(gameMode==='campaign'){drawOverlay('MISSION FAILED','#e63946',[{text:mission?mission.name:'',col:'#fff',font:'bold 22px Courier New'},{text:failReason||'You were killed',col:'#ff8585',font:'15px Courier New'},{text:'Retry the mission or return to the ops board',col:'#888',font:'12px Courier New'}],{label:'RETRY',col:'#8a1010',hov:'#e63946',border:'#e63946'},{label:'MENU',col:'#111',hov:'#333'});return;}
+  drawOverlay('GAME OVER','#e63946',[{text:`SCORE: ${score}`,col:'#fff',font:'bold 22px Courier New'},{text:`BEST: ${highScore}`,col:'#ffdd00',font:'16px Courier New'},{text:`Level ${globalLevel}/20  ·  £${currency}`,col:'#666',font:'12px Courier New'}],{label:'RETRY',col:'#8a1010',hov:'#e63946',border:'#e63946'},{label:'MENU',col:'#111',hov:'#333'});}
 function drawWin(){drawOverlay('YOU WIN!','#2ecc71',[{text:'ALL 20 LEVELS CLEARED!',col:'#888',font:'15px Courier New'},{text:`SCORE: ${score}`,col:'#fff',font:'bold 22px Courier New'},{text:score>=highScore?'NEW HIGH SCORE!':'Best: '+highScore,col:'#ffdd00',font:'16px Courier New'}],{label:'PLAY AGAIN',col:'#1a5a2a',hov:'#2ecc71',border:'#2ecc71'},{label:'MENU',col:'#111',hov:'#333'});}
 const PAUSE_QUIT={w:170,h:42,get x(){return W-this.w-20;},y:20};
 function drawPaused(){
@@ -2656,10 +2834,13 @@ function handleClick(e){
   if(state===STATE.PLAYING&&airstrikePending){const camX=player.x-W/2,camY=player.y-H/2;callAirstrike(mx+camX,my+camY);airstrikePending=false;return;}
   if(state===STATE.MENU){for(const reg of menuRegions){if(mx>reg.x&&mx<reg.x+reg.w&&my>reg.y&&my<reg.y+reg.h){reg.action();break;}}}
   else if(state===STATE.BRIEFING){if(briefRegion&&mx>briefRegion.x&&mx<briefRegion.x+briefRegion.w&&my>briefRegion.y&&my<briefRegion.y+briefRegion.h)beginMissionPlay();}
-  else if(state===STATE.PAUSED){const b=PAUSE_QUIT;if(mx>b.x&&mx<b.x+b.w&&my>b.y&&my<b.y+b.h){commitRun(false);toMenu(gameMode==='campaign'?'campaign':'tiles');}}
-  else if(state===STATE.GAME_OVER){const by=H/2+80;if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44)restartGame();if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44)toMenu(gameMode==='campaign'?'campaign':'tiles');}
+  else if(state===STATE.PAUSED){const b=PAUSE_QUIT;if(mx>b.x&&mx<b.x+b.w&&my>b.y&&my<b.y+b.h){commitRun(false);toMenu(returnView());}}
+  else if(state===STATE.GAME_OVER){const by=H/2+80;if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44)restartGame();if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44)toMenu(returnView());}
   else if(state===STATE.WIN){const by=H/2+80;
-    if(gameMode==='campaign'){
+    if(gameMode==='mp'){
+      if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44)restartGame();
+      if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44)toMenu('multiplayer');
+    } else if(gameMode==='campaign'){
       const nxt=mission?nextMission(mission.id):null;
       if(mx>W/2-130&&mx<W/2-10&&my>by&&my<by+44){if(nxt)startMission(nxt.id);else toMenu('campaign');}
       if(mx>W/2+10&&mx<W/2+130&&my>by&&my<by+44)toMenu('campaign');
@@ -2669,10 +2850,289 @@ function handleClick(e){
     }
   }
 }
+function returnView(){return gameMode==='campaign'?'campaign':gameMode==='mp'?'multiplayer':'tiles';}
 // Return to the menu, resetting mode so the next launch is clean
 function toMenu(view){gameMode='zombies';mission=null;state=STATE.MENU;menuTab='main';menuView=view||'tiles';}
 
 // ── Main loop ──────────────────────────────────────────────────────────────
+// ── MULTIPLAYER (bot PvP, team objective modes) ──────────────────────────────
+const MP_BLUE='#3fa9ff', MP_RED='#e63946', MP_RESPAWN=5, MP_ZONE_R=72, MP_CAP_TIME=10;
+const MP_MODES={
+  tdm:{name:'TEAM DEATHMATCH',limit:50, desc:'First team to 50 kills'},
+  dom:{name:'DOMINATION',     limit:200,desc:'Hold zones A/B/C to score'},
+  hp: {name:'HARDPOINT',      limit:250,desc:'Hold the rotating hill'},
+  ctf:{name:'CAPTURE THE FLAG',limit:3, desc:'Steal & return enemy flags'},
+};
+let bots=[], mpMode='tdm', mpTheme=0, mpTimer=600, mpScoreLimit=50, mpEnded=false;
+let mpScore={blue:0,red:0}, mpAcc={blue:0,red:0};
+let mpZones=[], mpHill=null, mpHillPts=[], mpHillIdx=0, mpHillT=0, mpFlags=null;
+let blueSpawn=null, redSpawn=null, playerDownT=0;
+
+function buildArena(themeIdx){
+  mapCfg=MAPS[themeIdx];worldMap=blankMap();coverTiles=new Set();
+  const cxT=Math.floor(MAP_W/2),midY=Math.floor(MAP_H/2);
+  const wall=(tx,ty)=>{if(tx<1||ty<3||tx>=MAP_W-1||ty>=MAP_H-3)return;worldMap[ty][tx]=1;coverTiles.add(ty*MAP_W+tx);};
+  // hollow building: walls + a doorway gap on one side (war-torn structures)
+  const building=(x,y,w,h)=>{
+    for(let dx=0;dx<w;dx++){wall(x+dx,y);wall(x+dx,y+h-1);}
+    for(let dy=0;dy<h;dy++){wall(x,y+dy);wall(x+w-1,y+dy);}
+    const s=randInt(0,3);
+    if(s===0)worldMap[y][x+(w>>1)]=0;else if(s===1)worldMap[y+h-1][x+(w>>1)]=0;
+    else if(s===2)worldMap[y+(h>>1)][x]=0;else worldMap[y+(h>>1)][x+w-1]=0;
+  };
+  // randomly placed buildings — different layout every match
+  const nB=randInt(4,7);
+  for(let i=0;i<nB;i++){const w=randInt(4,6),h=randInt(4,6),x=randInt(2,MAP_W-w-2),y=randInt(4,MAP_H-h-4);
+    if(Math.abs((y+h/2)-midY)<3)continue;       // don't straddle the central lane
+    building(x,y,w,h);}
+  // scattered rubble / sandbag cover (random amount, chunkier)
+  const nC=randInt(36,56);
+  for(let i=0;i<nC;i++){const x=randInt(2,MAP_W-3),y=randInt(4,MAP_H-5);
+    if(Math.abs(y-midY)<2)continue;            // keep a mid corridor open
+    if(Math.random()<0.5){const bw=randInt(1,2);for(let dx=0;dx<bw;dx++)wall(x+dx,y);}}
+  blueSpawn={x:tcx(cxT),y:tcx(MAP_H-3)};redSpawn={x:tcx(cxT),y:tcx(3)};
+  // clear the two spawn pockets
+  for(const ty of [2,3,MAP_H-4,MAP_H-3])for(let dx=-1;dx<=1;dx++){worldMap[ty][cxT+dx]=0;coverTiles.delete(ty*MAP_W+(cxT+dx));}
+  generateDebris();
+  if(!reachable(cxT,MAP_H-3).some(([x,y])=>x===cxT&&y===3)){worldMap=blankMap();coverTiles=new Set();generateDebris();}
+}
+// clear a 3×3 around each objective so it can't be walled off by buildings/cover
+function mpEnsureFloor(pts){pts.forEach(p=>{const tx=Math.floor(p.x/TILE),ty=Math.floor(p.y/TILE);for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const x=tx+dx,y=ty+dy;if(x>0&&y>0&&x<MAP_W-1&&y<MAP_H-1){worldMap[y][x]=0;coverTiles.delete(y*MAP_W+x);}}});}
+function setupMpObjectives(){
+  const cxT=Math.floor(MAP_W/2),midY=Math.floor(MAP_H/2);
+  mpZones=[];mpHillPts=[];mpHill=null;mpFlags=null;
+  if(mpMode==='dom'){
+    // spread across the map (triangle): A top-left, B centre, C bottom-right
+    mpZones=[{id:'A',x:tcx(7),y:tcx(7),owner:null,prog:0,capTeam:null},
+             {id:'B',x:tcx(cxT),y:tcx(midY),owner:null,prog:0,capTeam:null},
+             {id:'C',x:tcx(MAP_W-8),y:tcx(MAP_H-8),owner:null,prog:0,capTeam:null}];
+    mpEnsureFloor(mpZones);
+  } else if(mpMode==='hp'){
+    mpHillPts=[{x:tcx(cxT),y:tcx(midY)},{x:tcx(7),y:tcx(8)},{x:tcx(MAP_W-8),y:tcx(MAP_H-9)},{x:tcx(MAP_W-8),y:tcx(8)},{x:tcx(7),y:tcx(MAP_H-9)}];
+    mpEnsureFloor(mpHillPts);mpHillIdx=0;mpHillT=60;mpHill=mpHillPts[0];
+  } else if(mpMode==='ctf'){
+    mpFlags={blue:{home:{x:blueSpawn.x,y:blueSpawn.y},pos:{x:blueSpawn.x,y:blueSpawn.y},carrier:null,downT:0},
+             red: {home:{x:redSpawn.x, y:redSpawn.y}, pos:{x:redSpawn.x, y:redSpawn.y}, carrier:null,downT:0}};
+  }
+}
+// Random floor spawn anywhere on the map, biased away from living enemies (no spawning on top of someone)
+function mpSpawnPos(team){
+  let best=null,bestD=-1;
+  for(let i=0;i<40;i++){
+    const tx=randInt(2,MAP_W-3),ty=randInt(2,MAP_H-3);if(worldMap[ty][tx]!==0)continue;
+    const x=tcx(tx),y=tcx(ty);let nd=1e9;
+    for(const o of bots){if(o.alive&&o.team!==team)nd=Math.min(nd,Math.hypot(o.x-x,o.y-y));}
+    if(team==='red'&&playerDownT<=0&&player&&player.x!==undefined)nd=Math.min(nd,Math.hypot(player.x-x,player.y-y));
+    if(nd>320)return {x,y};
+    if(nd>bestD){bestD=nd;best={x,y};}
+  }
+  return best||{x:tcx(Math.floor(MAP_W/2)),y:tcx(Math.floor(MAP_H/2))};
+}
+function makeBot(team){const s=mpSpawnPos(team);return {x:s.x,y:s.y,hp:100,maxHp:100,angle:0,team,alive:true,respawnT:0,fireCd:rand(0,1),spd:rand(150,175),role:'',carryFlag:null,stuckT:0};}
+function spawnBots(){bots=[];for(let i=0;i<3;i++)bots.push(makeBot('blue'));for(let i=0;i<4;i++)bots.push(makeBot('red'));if(mpMode==='ctf')bots.forEach((b,i)=>b.role=(i%2===0)?'attack':'defend');}
+function respawnBot(b){const s=mpSpawnPos(b.team);b.alive=true;b.hp=b.maxHp;b.x=s.x;b.y=s.y;b.respawnT=0;b.carryFlag=null;}
+
+function mpPlayerDown(){if(playerDownT>0)return;playerDownT=MP_RESPAWN;if(mpMode==='tdm')mpScore.red++;mpFlagDropFrom(player);addShake(12,0.4);addNotif('You were killed — respawning…','#ff8585',3);}
+function mpRespawnPlayer(){const s=mpSpawnPos('blue');player.hp=player.maxHp;player.x=s.x;player.y=s.y;player.invincible=2;player.lastStand=false;player.dmgT=99;player.mag=player.magMax;player.reloadT=0;playerDownT=0;}
+function mpStartReload(){if(player.reloadT>0||player.mag>=player.magMax)return;player.reloadT=1.4;addNotif('Reloading…','#9aa0a6',1);}
+function mpMelee(w){ // knife = one-shot kill
+  const range=(w.range||54)+16,arc=w.arc||1.0;
+  for(const o of bots){if(!o.alive||o.team==='blue')continue;if(dist(player,o)>range)continue;if(Math.abs(angDiff(Math.atan2(o.y-player.y,o.x-player.x),player.angle))>arc)continue;spawnBlood(o.x,o.y,16);mpKill({fromPlayer:true,team:'blue'},o);break;}
+  for(let i=0;i<7;i++){const a=player.angle+rand(-arc,arc),s=rand(3,7);particles.push({x:player.x+Math.cos(a)*range*0.6,y:player.y+Math.sin(a)*range*0.6,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:0.18,maxLife:0.18,r:rand(2,4),color:'#e8e8f0'});}
+  addShake(3,0.08);
+}
+
+function mpNearestEnemy(b){let best=null,bd=1e9;
+  for(const o of bots){if(!o.alive||o.team===b.team)continue;const d=Math.hypot(o.x-b.x,o.y-b.y);if(d<bd){bd=d;best=o;}}
+  if(b.team==='red'&&playerDownT<=0){const d=Math.hypot(player.x-b.x,player.y-b.y);if(d<bd){bd=d;best=player;}}
+  return {tgt:best,d:bd};
+}
+// Returns a {x,y} goal, or null = "nothing to do, roam freely" (sets b.roamC for biased roaming)
+function mpBotGoal(b){
+  b.roamC=null;
+  if(mpMode==='tdm'){const e=mpNearestEnemy(b);return e.tgt?{x:e.tgt.x,y:e.tgt.y}:null;}
+  if(mpMode==='dom'){ // head to a zone we DON'T own (capture/contest); once it's ours, move on
+    let best=null,bd=1e9;
+    for(const z of mpZones){if(z.owner===b.team)continue;const w=(z.capTeam&&z.capTeam!==b.team)?0.6:1;const d=Math.hypot(z.x-b.x,z.y-b.y)*w;if(d<bd){bd=d;best=z;}}
+    return best?{x:best.x,y:best.y}:null; // all zones held → roam/patrol
+  }
+  if(mpMode==='hp')return mpHill;
+  if(mpMode==='ctf'){const mine=mpFlags[b.team],theirs=mpFlags[b.team==='blue'?'red':'blue'];
+    if(b.carryFlag)return mine.home;                              // carrying → run it home
+    if(b.role==='defend'){if(mine.carrier)return {x:mine.carrier.x,y:mine.carrier.y};b.roamC=mine.home;return null;} // patrol base
+    return {x:theirs.pos.x,y:theirs.pos.y};}                      // attacker → enemy flag
+  return null;
+}
+function mpRoamPoint(b,center){
+  for(let i=0;i<12;i++){let tx,ty;
+    if(center){tx=Math.floor(center.x/TILE)+randInt(-4,4);ty=Math.floor(center.y/TILE)+randInt(-4,4);}
+    else{tx=randInt(2,MAP_W-3);ty=randInt(3,MAP_H-4);}
+    if(tx>0&&ty>0&&tx<MAP_W-1&&ty<MAP_H-1&&worldMap[ty][tx]===0)return {x:tcx(tx),y:tcx(ty)};}
+  return {x:b.x+rand(-150,150),y:b.y+rand(-150,150)};
+}
+function updateBots(dt){
+  for(const b of bots){
+    if(!b.alive){b.respawnT-=dt;if(b.respawnT<=0)respawnBot(b);continue;}
+    b.dmgT=(b.dmgT||0)+dt;if(b.dmgT>7&&b.hp<b.maxHp)b.hp=Math.min(b.maxHp,b.hp+25*dt); // out-of-combat health regen
+    if(b.stun>0){b.stun-=dt;continue;}                                                  // flashbanged: frozen
+    const e=mpNearestEnemy(b);
+    let goal=mpBotGoal(b);
+    if(!goal){ // roam: pick a wander point and keep moving so they never look frozen
+      b.wt=(b.wt||0)-dt;
+      if(b.wx===undefined||b.wt<=0||Math.hypot(b.wx-b.x,b.wy-b.y)<44){const rp=mpRoamPoint(b,b.roamC);b.wx=rp.x;b.wy=rp.y;b.wt=rand(2.5,5);}
+      goal={x:b.wx,y:b.wy};
+    }
+    if(e.tgt&&e.d<520&&losClear(b.x,b.y,e.tgt.x,e.tgt.y)){
+      b.angle=Math.atan2(e.tgt.y-b.y,e.tgt.x-b.x);
+      if(e.d>210)moveToward(b,e.tgt.x,e.tgt.y,b.spd,dt);
+      else if(e.d<120)moveToward(b,b.x*2-e.tgt.x,b.y*2-e.tgt.y,b.spd*0.6,dt);
+      else {const pa=b.angle+Math.PI/2;moveToward(b,b.x+Math.cos(pa)*40,b.y+Math.sin(pa)*40,b.spd*0.5,dt);} // strafe at mid range
+      b.fireCd-=dt;
+      if(b.fireCd<=0&&e.d>40){const a=b.angle+rand(-0.08,0.08);bullets.push({x:b.x,y:b.y,vx:Math.cos(a)*430,vy:Math.sin(a)*430,dmg:9,life:1.6,color:b.team==='blue'?'#aee0ff':'#ffb0b0',fromPlayer:false,team:b.team,br:4});spawnMuzzle(b.x+Math.cos(a)*16,b.y+Math.sin(a)*16,a);b.fireCd=rand(0.6,1.2);}
+    } else {
+      b.angle=Math.atan2(goal.y-b.y,goal.x-b.x);
+      if(!moveToward(b,goal.x,goal.y,b.spd,dt)){b.stuckT+=dt;if(b.stuckT>0.4){b.wx=undefined;b.angle+=rand(-1.8,1.8);moveToward(b,b.x+Math.cos(b.angle)*40,b.y+Math.sin(b.angle)*40,b.spd,dt);b.stuckT=0;}}else b.stuckT=0;
+    }
+  }
+}
+function updateMpBullets(dt){
+  bullets=bullets.filter(b=>{
+    b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
+    if(b.life<=0||isWall(b.x,b.y))return false;
+    const bteam=b.team||(b.fromPlayer?'blue':'red');
+    for(const o of bots){if(!o.alive||o.team===bteam)continue;if(Math.hypot(b.x-o.x,b.y-o.y)<15+(b.br||4)){o.hp-=b.dmg;o.dmgT=0;spawnBlood(o.x,o.y,6);if(o.hp<=0)mpKill(b,o);return false;}}
+    if(bteam==='red'&&playerDownT<=0&&Math.hypot(b.x-player.x,b.y-player.y)<player.radius+(b.br||4)){if(player.invincible<=0){takeDamage(b.dmg);player.invincible=0.25;addShake(5,0.15);}spawnBlood(b.x,b.y,4);return false;}
+    return true;
+  });
+}
+function mpKill(b,victim){
+  victim.alive=false;victim.respawnT=MP_RESPAWN;spawnBlood(victim.x,victim.y,16);
+  const killerTeam=b.team||(b.fromPlayer?'blue':'red');
+  if(mpMode==='tdm')mpScore[killerTeam]++;
+  if(victim.carryFlag)mpFlagDropFrom(victim);
+  if(b.fromPlayer){sessionKills++;sessionCoins+=2;bumpChallenge('kills',1);}
+}
+function mpFlagDropFrom(c){if(!mpFlags)return;for(const t of ['blue','red']){const f=mpFlags[t];if(f.carrier===c){f.carrier=null;f.pos={x:c.x,y:c.y};f.downT=10;}}if(c)c.carryFlag=null;}
+function mpCountIn(z,team){let n=0;for(const b of bots){if(b.alive&&b.team===team&&Math.hypot(b.x-z.x,b.y-z.y)<MP_ZONE_R)n++;}if(team==='blue'&&playerDownT<=0&&Math.hypot(player.x-z.x,player.y-z.y)<MP_ZONE_R)n++;return n;}
+function mpAdd(team,dt,rate){mpAcc[team]+=dt*(rate||1);while(mpAcc[team]>=1){mpAcc[team]-=1;mpScore[team]++;}}
+// Domination capture meter: ~MP_CAP_TIME secs with 1 member, faster with more (n members = n×rate)
+function mpCapZone(z,team,n,dt){
+  if(z.owner===team){z.prog=MP_CAP_TIME;z.capTeam=team;return;}
+  if(z.capTeam!==team){z.capTeam=team;z.prog=0;}
+  z.prog+=n*dt;
+  if(z.prog>=MP_CAP_TIME){z.owner=team;z.prog=MP_CAP_TIME;addNotif('Zone '+z.id+' captured by '+(team==='blue'?'BLUE':'RED')+'!',team==='blue'?MP_BLUE:MP_RED,3);}
+}
+function mpCheckFlag(c,cteam){
+  const enemyT=cteam==='blue'?'red':'blue',f=mpFlags[enemyT];
+  if(!f.carrier&&Math.hypot(c.x-f.pos.x,c.y-f.pos.y)<28){f.carrier=c;f.downT=0;c.carryFlag=enemyT;addNotif((cteam==='blue'?'BLUE':'RED')+' grabbed the flag!',cteam==='blue'?MP_BLUE:MP_RED,3);}
+  const mine=mpFlags[cteam];
+  if(!mine.carrier&&mine.downT>0&&Math.hypot(c.x-mine.pos.x,c.y-mine.pos.y)<28){mine.pos={x:mine.home.x,y:mine.home.y};mine.downT=0;addNotif((cteam==='blue'?'BLUE':'RED')+' flag returned','#ccc',2);}
+}
+function mpCheckCapture(c,cteam){
+  if(!c.carryFlag)return;const mine=mpFlags[cteam],homeOk=!mine.carrier&&Math.hypot(mine.pos.x-mine.home.x,mine.pos.y-mine.home.y)<12;
+  if(homeOk&&Math.hypot(c.x-mine.home.x,c.y-mine.home.y)<34){mpScore[cteam]++;const ef=mpFlags[c.carryFlag];ef.carrier=null;ef.pos={x:ef.home.x,y:ef.home.y};ef.downT=0;c.carryFlag=null;addNotif((cteam==='blue'?'BLUE':'RED')+' CAPTURED THE FLAG!','#ffd24a',4);if(c===player)sessionCoins+=20;}
+}
+function updateMpRules(dt){
+  if(mpEnded)return;
+  if(playerDownT>0){playerDownT-=dt;if(playerDownT<=0)mpRespawnPlayer();}
+  // out-of-combat health regen (after 7s with no damage, the bar climbs back up)
+  player.dmgT=(player.dmgT||0)+dt;if(playerDownT<=0&&player.dmgT>7&&player.hp<player.maxHp)player.hp=Math.min(player.maxHp,player.hp+25*dt);
+  if(player.reloadT>0){player.reloadT-=dt;if(player.reloadT<=0){player.mag=player.magMax;addNotif('Reloaded','#9aa0a6',1);}}
+  mpTimer-=dt;
+  if(mpMode==='dom'){for(const z of mpZones){const bIn=mpCountIn(z,'blue'),rIn=mpCountIn(z,'red');if(bIn>0&&rIn===0)mpCapZone(z,'blue',bIn,dt);else if(rIn>0&&bIn===0)mpCapZone(z,'red',rIn,dt);if(z.owner)mpAdd(z.owner,dt,1);}}
+  else if(mpMode==='hp'){mpHillT-=dt;if(mpHillT<=0){mpHillIdx=(mpHillIdx+1)%mpHillPts.length;mpHill=mpHillPts[mpHillIdx];mpHillT=60;addNotif('⛳ Hardpoint moved!','#ffd24a',3);}const bIn=mpCountIn(mpHill,'blue'),rIn=mpCountIn(mpHill,'red');if(bIn>0&&rIn===0)mpAdd('blue',dt,1);else if(rIn>0&&bIn===0)mpAdd('red',dt,1);}
+  else if(mpMode==='ctf'){
+    for(const t of ['blue','red']){const f=mpFlags[t];if(!f.carrier&&f.downT>0){f.downT-=dt;if(f.downT<=0){f.pos={x:f.home.x,y:f.home.y};addNotif((t==='blue'?'BLUE':'RED')+' flag returned','#ccc',2);}}}
+    if(playerDownT<=0){mpCheckFlag(player,'blue');mpCheckCapture(player,'blue');}
+    for(const b of bots)if(b.alive){mpCheckFlag(b,b.team);mpCheckCapture(b,b.team);}
+    for(const t of ['blue','red']){const f=mpFlags[t];if(f.carrier){f.pos.x=f.carrier.x;f.pos.y=f.carrier.y;}}
+  }
+  if(mpScore.blue>=mpScoreLimit||mpScore.red>=mpScoreLimit||mpTimer<=0)mpEnd();
+}
+function mpEnd(){mpEnded=true;const won=mpScore.blue>mpScore.red;sessionCoins+=won?60:20;commitRun(false);state=STATE.WIN;}
+
+function drawBot(b,camX,camY){
+  if(!b.alive)return;const sx=b.x-camX,sy=b.y-camY;
+  ctx.save();ctx.translate(sx,sy);ctx.rotate(b.angle);
+  ctx.fillStyle='rgba(0,0,0,0.35)';ctx.beginPath();ctx.ellipse(3,6,13,7,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=b.team==='blue'?'#2b6fa0':'#a02b2b';ctx.beginPath();ctx.arc(0,0,15,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=b.team==='blue'?'#4aa0e0':'#e04a4a';ctx.beginPath();ctx.arc(0,0,10,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#555';ctx.fillRect(8,-4,22,8);ctx.fillStyle='#333';ctx.fillRect(22,-3,10,6);
+  ctx.restore();
+  if(b.hp<b.maxHp){ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(sx-14,sy-25,28,4);ctx.fillStyle=b.team==='blue'?MP_BLUE:MP_RED;ctx.fillRect(sx-14,sy-25,28*clamp(b.hp/b.maxHp,0,1),4);}
+  if(b.team==='blue'){ctx.fillStyle='rgba(120,220,160,0.9)';ctx.font='bold 9px Courier New';ctx.textAlign='center';ctx.fillText('▲',sx,sy-29);}
+  if(b.carryFlag){ctx.fillStyle=b.carryFlag==='blue'?MP_BLUE:MP_RED;ctx.fillRect(sx-1,sy-38,3,12);ctx.fillRect(sx+2,sy-38,8,5);}
+}
+function drawMpZones(camX,camY){
+  const t=performance.now()/1000,p=Math.sin(t*3)*0.3+0.7;
+  if(mpMode==='dom'){for(const z of mpZones){const sx=z.x-camX,sy=z.y-camY,col=z.owner==='blue'?MP_BLUE:z.owner==='red'?MP_RED:'#9aa0a6';
+    ctx.globalAlpha=0.12;ctx.fillStyle=col;ctx.beginPath();ctx.arc(sx,sy,MP_ZONE_R,0,Math.PI*2);ctx.fill();
+    ctx.globalAlpha=p;ctx.strokeStyle=col;ctx.lineWidth=3;ctx.beginPath();ctx.arc(sx,sy,MP_ZONE_R,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;
+    if(z.prog>0&&z.prog<MP_CAP_TIME){const cc=z.capTeam==='blue'?MP_BLUE:MP_RED;ctx.strokeStyle=cc;ctx.lineWidth=5;ctx.beginPath();ctx.arc(sx,sy,MP_ZONE_R-7,-Math.PI/2,-Math.PI/2+(z.prog/MP_CAP_TIME)*Math.PI*2);ctx.stroke();}
+    ctx.fillStyle=col;ctx.font='bold 26px Courier New';ctx.textAlign='center';ctx.fillText(z.id,sx,sy+9);}}
+  else if(mpMode==='hp'&&mpHill){const sx=mpHill.x-camX,sy=mpHill.y-camY;
+    ctx.globalAlpha=0.14;ctx.fillStyle='#ffd24a';ctx.beginPath();ctx.arc(sx,sy,MP_ZONE_R,0,Math.PI*2);ctx.fill();
+    ctx.globalAlpha=p;ctx.strokeStyle='#ffd24a';ctx.lineWidth=3;ctx.beginPath();ctx.arc(sx,sy,MP_ZONE_R,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;
+    ctx.fillStyle='#ffd24a';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('⛳ HARDPOINT',sx,sy-MP_ZONE_R-8);}
+  else if(mpMode==='ctf'&&mpFlags){for(const tm of ['blue','red']){const f=mpFlags[tm],col=tm==='blue'?MP_BLUE:MP_RED,hx=f.home.x-camX,hy=f.home.y-camY;
+    ctx.globalAlpha=0.5;ctx.strokeStyle=col;ctx.lineWidth=2;ctx.strokeRect(hx-26,hy-26,52,52);ctx.globalAlpha=1;
+    if(!f.carrier){const sx=f.pos.x-camX,sy=f.pos.y-camY;ctx.fillStyle=col;ctx.fillRect(sx-2,sy-18,4,24);ctx.beginPath();ctx.moveTo(sx+2,sy-18);ctx.lineTo(sx+20,sy-12);ctx.lineTo(sx+2,sy-6);ctx.closePath();ctx.fill();
+      ctx.fillStyle=col;ctx.font='bold 10px Courier New';ctx.textAlign='center';ctx.fillText(tm.toUpperCase()+' FLAG',sx,sy-22);}}}
+}
+function drawMpHUD(){
+  const bw=340,bx=W/2-bw/2;
+  ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(bx,12,bw,42);ctx.strokeStyle='#333';ctx.lineWidth=1;ctx.strokeRect(bx,12,bw,42);
+  ctx.textAlign='left';ctx.fillStyle=MP_BLUE;ctx.font='bold 24px Courier New';ctx.fillText(mpScore.blue,bx+16,42);
+  ctx.textAlign='right';ctx.fillStyle=MP_RED;ctx.fillText(mpScore.red,bx+bw-16,42);
+  ctx.textAlign='center';ctx.fillStyle='#eee';ctx.font='bold 11px Courier New';ctx.fillText(MP_MODES[mpMode].name,W/2,28);
+  const mm=Math.max(0,Math.floor(mpTimer/60)),ss=Math.max(0,Math.floor(mpTimer%60));
+  ctx.fillStyle='#9aa0a6';ctx.font='10px Courier New';ctx.fillText(`${mm}:${ss<10?'0':''}${ss}  ·  first to ${mpScoreLimit}`,W/2,46);
+  if(mpMode==='dom'){mpZones.forEach((z,i)=>{const x=W/2-66+i*66,col=z.owner==='blue'?MP_BLUE:z.owner==='red'?MP_RED:'#444';ctx.fillStyle=col;ctx.fillRect(x-18,60,36,18);ctx.fillStyle=z.owner?'#001':'#999';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText(z.id,x,73);});}
+  else if(mpMode==='hp'){ctx.fillStyle='#ffd24a';ctx.font='10px Courier New';ctx.textAlign='center';ctx.fillText('Hill moves in '+Math.ceil(mpHillT)+'s',W/2,72);}
+  else if(mpMode==='ctf'&&mpFlags){const fs=tm=>{const f=mpFlags[tm];return f.carrier?'TAKEN':(f.downT>0?'DROPPED':'HOME');};ctx.font='10px Courier New';ctx.textAlign='center';ctx.fillStyle=MP_BLUE;ctx.fillText('BLUE flag: '+fs('blue'),W/2-95,72);ctx.fillStyle=MP_RED;ctx.fillText('RED flag: '+fs('red'),W/2+95,72);}
+  const hpR=clamp(player.hp/player.maxHp,0,1);
+  ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(14,H-46,236,32);
+  ctx.fillStyle='#300';ctx.fillRect(18,H-42,206,12);ctx.fillStyle=hpR>0.5?'#2ecc71':hpR>0.25?'#f39c12':'#e74c3c';ctx.fillRect(18,H-42,206*hpR,12);
+  ctx.strokeStyle='#444';ctx.lineWidth=1;ctx.strokeRect(18,H-42,206,12);
+  ctx.fillStyle='#fff';ctx.font='bold 9px Courier New';ctx.textAlign='center';ctx.fillText(`HP ${Math.max(0,Math.ceil(player.hp))}  ·  ${player.weapon.toUpperCase()}`,121,H-33);
+  // Ammo / reload (bottom-right) + grenade counts
+  const ammoTxt=player.weapon==='rifle'?(player.reloadT>0?'RELOADING…':player.mag+' / ∞'):(player.weapon==='knife'?'KNIFE — 1-shot':'PISTOL — ∞');
+  ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(W-180,H-46,166,32);
+  ctx.fillStyle=player.weapon==='rifle'&&player.mag===0&&player.reloadT<=0?'#ff6666':'#fff';ctx.font='bold 13px Courier New';ctx.textAlign='right';ctx.fillText(ammoTxt,W-22,H-31);
+  ctx.fillStyle='#9aa0a6';ctx.font='9px Courier New';ctx.textAlign='left';ctx.fillText(`R reload · G nade`,W-174,H-31);
+  ctx.textAlign='right';ctx.fillStyle='#cdd';ctx.font='10px Courier New';ctx.fillText(`💣${player.grenades.frag}  ✦${player.grenades.flashbang} (${player.selectedGrenade==='frag'?'FRAG':'FLASH'})`,W-22,H-52);
+  if(player.weapon==='rifle'&&player.mag===0&&player.reloadT<=0){ctx.fillStyle='#ff6666';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('PRESS R TO RELOAD',W/2,H-78);}
+  if(player.carryFlag){ctx.fillStyle='#ffd24a';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('🚩 You have the enemy flag — get it home!',W/2,H-60);}
+  if(playerDownT>0){ctx.fillStyle='rgba(120,0,0,0.45)';ctx.fillRect(0,0,W,H);ctx.fillStyle='#fff';ctx.font='bold 40px Courier New';ctx.textAlign='center';ctx.fillText('RESPAWNING',W/2,H/2-10);ctx.fillStyle='#ffd24a';ctx.font='bold 30px Courier New';ctx.fillText(Math.ceil(playerDownT)+'s',W/2,H/2+30);}
+}
+function drawMatchEnd(){
+  const draw=mpScore.blue===mpScore.red,won=mpScore.blue>mpScore.red;
+  drawOverlay(draw?'DRAW':(won?'VICTORY':'DEFEAT'),draw?'#ffd24a':(won?'#2ecc71':'#e63946'),
+    [{text:MP_MODES[mpMode].name,col:'#fff',font:'bold 20px Courier New'},
+     {text:`BLUE ${mpScore.blue}  —  ${mpScore.red} RED`,col:'#ccc',font:'16px Courier New'}],
+    {label:'PLAY AGAIN',col:'#1a5a2a',hov:'#2ecc71',border:'#2ecc71'},
+    {label:'MENU',col:'#111',hov:'#333'});
+}
+function startMultiplayer(modeId){
+  syncChallengePeriods();
+  gameMode='mp';mission=null;mpMode=modeId;mpEnded=false;
+  mpScore={blue:0,red:0};mpAcc={blue:0,red:0};mpScoreLimit=MP_MODES[modeId].limit;mpTimer=600;playerDownT=0;
+  bullets=[];particles=[];pickups=[];enemies=[];grenadeObjects=[];firePatches=[];notifs=[];deployables=[];airBombs=[];builtWalls=[];
+  buyStationOpen=false;inventoryOpen=false;bigMapOpen=false;workshopOpen=false;buildMode=false;lightsOn=true;
+  sessionCoins=0;sessionKills=0;resetUpgrades();
+  mpTheme=randInt(0,MAPS.length-1);
+  buildArena(mpTheme);setupMpObjectives();
+  initPlayer();
+  player.weapons=['knife','pistol','rifle'];player.weapon='rifle';player.ammo.rifle=Infinity;
+  player.magMax=30;player.mag=30;player.reloadT=0;player.dmgT=99;
+  player.grenades={frag:2,molotov:0,flashbang:2};player.selectedGrenade='frag';
+  spawnBots();
+  const ps=mpSpawnPos('blue');player.x=ps.x;player.y=ps.y;
+  state=STATE.PLAYING;gameStartTime=performance.now()/1000;
+  addNotif(MP_MODES[modeId].name+' — '+MP_MODES[modeId].desc,'#7fd4ff',5);
+  addNotif('BLUE (you + allies) vs RED · respawns on · WASD move, click shoot','#9aa0a6',5);
+}
+
 let lastTime=performance.now();
 function loop(now){
   const dt=Math.min((now-lastTime)/1000,0.05);lastTime=now;
@@ -2685,6 +3145,10 @@ function loop(now){
       if(gameMode==='campaign'){
         updatePlayer(dt);updateBullets(dt);updateParticles(dt);updateNotifs(dt);
         updateStealth(dt);
+      } else if(gameMode==='mp'){
+        if(playerDownT<=0)updatePlayer(dt);
+        updateMpBullets(dt);updateGrenades(dt);updateParticles(dt);updateNotifs(dt);
+        updateBots(dt);updateMpRules(dt);
       } else {
       updatePlayer(dt);updateBullets(dt);updateParticles(dt);updatePickups(dt);
       updateGrenades(dt);updateDeployables(dt);updateAirBombs(dt);updateBarricades(dt);updateBuiltWalls(dt);updateInventoryAnim(dt);updateNotifs(dt);
@@ -2699,20 +3163,25 @@ function loop(now){
     const camX=Math.round(player.x-W/2),camY=Math.round(player.y-H/2);
     ctx.fillStyle=mapCfg.bg;ctx.fillRect(0,0,W,H);
     if(gameMode==='campaign'){drawStealthWorld(camX,camY);}
+    else if(gameMode==='mp'){drawWorld(camX,camY);drawDebris(camX,camY);}
     else{drawWorld(camX,camY);drawDebris(camX,camY);drawMapObjects(camX,camY);}
+    if(gameMode==='mp')drawMpZones(camX,camY);
     drawBuiltWalls(camX,camY);drawDeployables(camX,camY);drawAirBombs(camX,camY);drawPickups(camX,camY);drawParticles(camX,camY);
     drawGrenades(camX,camY);drawBullets(camX,camY);
     enemies.forEach(e=>drawEnemy(e,camX,camY));
-    drawPlayer(camX,camY);drawFlashlight(camX,camY);
+    if(gameMode==='mp')bots.forEach(b=>drawBot(b,camX,camY));
+    if(!(gameMode==='mp'&&playerDownT>0))drawPlayer(camX,camY);
+    if(gameMode!=='mp')drawFlashlight(camX,camY);
     if(gameMode==='campaign')drawStealth(camX,camY);
     drawScreenFlash();
     if(gameMode==='campaign')drawStealthHUD();
+    else if(gameMode==='mp')drawMpHUD();
     else{drawHUD();drawInventory();drawBuyStation();drawWorkshop();drawBigMap();}
     drawChallengeSidebar();
     if(state===STATE.PAUSED)drawPaused();
   }
   else if(state===STATE.GAME_OVER)drawGameOver();
-  else if(state===STATE.WIN){if(gameMode==='campaign')drawMissionComplete();else drawWin();}
+  else if(state===STATE.WIN){if(gameMode==='mp')drawMatchEnd();else if(gameMode==='campaign')drawMissionComplete();else drawWin();}
   ctx.restore();
   requestAnimationFrame(loop);
 }
