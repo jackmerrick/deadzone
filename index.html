@@ -2992,14 +2992,14 @@ function drawMultiplayerSelect(){
   ['recruit','regular','hardened','veteran'].forEach((d,i)=>{
     mButton(lx+90+i*66,240,62,24,MP_DIFF[d].label,{id:'mp_df'+d,active:mpDifficulty===d,activeFill:C.ACCENT,activeBorder:C.ACCENT_SOFT,activeFg:'#fff',glow:mpDifficulty===d?C.ACCENT:C.BORDER_HI,fs:9,r:6,action:()=>{mpDifficulty=d;}});
   });
-  const cards=[['tdm','TEAM DEATHMATCH'],['dom','DOMINATION'],['hp','HARDPOINT'],['ctf','CAPTURE THE FLAG'],['gungame','GUN GAME']];
-  const cw=Math.min(540,W-120),ch=52,cx=W/2-cw/2;let y=274;
+  const cards=[['tdm','TEAM DEATHMATCH'],['dom','DOMINATION'],['hp','HARDPOINT'],['ctf','CAPTURE THE FLAG'],['kc','KILL CONFIRMED'],['gungame','GUN GAME']];
+  const cw=Math.min(540,W-120),ch=46,cx=W/2-cw/2;let y=270;
   cards.forEach(([id,name])=>{
     const t=hoverAmt('mp_'+id,mHov(cx,y,cw,ch)),hov=t>0.5;
     panel(cx,y,cw,ch,{r:10,top:mix(C.PANEL_HI,'#2a2415',t),bottom:C.PANEL,border:mix(C.BORDER,C.GOLD,t),lw:1+t});
-    ctx.textAlign='left';ctx.fillStyle=hov?C.GOLD:C.TEXT;ctx.font=mFont(17,'bold');ctx.fillText(name,cx+18,y+24);
-    ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(10);ctx.fillText(MP_MODES[id].desc,cx+18,y+42);
-    ctx.textAlign='right';ctx.fillStyle=hov?C.GOLD:C.TEXT_FAINT;ctx.font=mFont(11,'bold');ctx.fillText(hov?'▶ PLAY '+(mpTeamSize+'v'+mpTeamSize):(id==='gungame'?'finish the ladder':'first to '+MP_MODES[id].limit),cx+cw-16,y+33);
+    ctx.textAlign='left';ctx.fillStyle=hov?C.GOLD:C.TEXT;ctx.font=mFont(16,'bold');ctx.fillText(name,cx+18,y+20);
+    ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(9);ctx.fillText(MP_MODES[id].desc,cx+18,y+36);
+    ctx.textAlign='right';ctx.fillStyle=hov?C.GOLD:C.TEXT_FAINT;ctx.font=mFont(11,'bold');ctx.fillText(hov?'▶ PLAY '+(mpTeamSize+'v'+mpTeamSize):(id==='gungame'?'finish the ladder':id==='kc'?'confirm tags':'first to '+MP_MODES[id].limit),cx+cw-16,y+27);
     mReg(cx,y,cw,ch,()=>startMultiplayer(id));
     y+=ch+10;
   });
@@ -3373,8 +3373,11 @@ const MP_MODES={
   dom:{name:'DOMINATION',     limit:200,desc:'Hold zones A/B/C to score'},
   hp: {name:'HARDPOINT',      limit:250,desc:'Hold the rotating hill'},
   ctf:{name:'CAPTURE THE FLAG',limit:3, desc:'Steal & return enemy flags'},
+  kc: {name:'KILL CONFIRMED', limit:50, desc:'Grab dog-tags to confirm kills (or deny)'},
   gungame:{name:'GUN GAME',   limit:GUNGAME_WEAPONS.length,desc:'Kill to advance weapons — finish the ladder to win'},
 };
+// Killstreak rewards (player only): earned by consecutive kills without dying.
+let mpUavT=0, mpSentries=[], mpStrikes=[], mpTags=[]; // UAV timer, sentry guns, airstrike bombs, KC dog-tags
 let mpTeamSize=4; // combatants per team (incl. the human on blue): 2 = 2v2, 4 = 4v4
 let bots=[], mpMode='tdm', mpTheme=0, mpTimer=600, mpScoreLimit=50, mpEnded=false;
 let mpScore={blue:0,red:0}, mpAcc={blue:0,red:0};
@@ -3477,7 +3480,7 @@ function spawnBots(){
 }
 function respawnBot(b){const s=mpSpawnPos(b.team);b.alive=true;b.hp=b.maxHp;b.x=s.x;b.y=s.y;b.respawnT=0;b.carryFlag=null;b.seen=null;b.react=0;b.hitT=0;b.nades=2;b.nadeCd=rand(4,9);b.spawnProt=2.5;}
 
-function mpPlayerDown(){if(playerDownT>0)return;playerDownT=MP_RESPAWN;mpMe.deaths++;if(mpMode==='tdm')mpScore.red++;mpFlagDropFrom(player);addShake(12,0.4);addNotif('You were killed — respawning…','#ff8585',3);}
+function mpPlayerDown(){if(playerDownT>0)return;playerDownT=MP_RESPAWN;mpMe.deaths++;mpMe.streak=0;if(mpMode==='tdm')mpScore.red++;mpFlagDropFrom(player);addShake(12,0.4);addNotif('You were killed — respawning…','#ff8585',3);}
 function mpRespawnPlayer(){const s=mpSpawnPos('blue');player.hp=player.maxHp;player.x=s.x;player.y=s.y;player.invincible=2;player.lastStand=false;player.dmgT=99;player.mag=player.magMax;player.reloadT=0;playerDownT=0;if(mpMode==='gungame')gunGameEquip(mpMe.tier||0);}
 function mpStartReload(){if(player.reloadT>0||player.mag>=player.magMax)return;player.reloadT=1.4;sndReload();addNotif('Reloading…','#9aa0a6',1);}
 function mpMelee(w){ // knife = one-shot kill
@@ -3496,6 +3499,7 @@ function mpNearestEnemy(b){let best=null,bd=1e9;
 function mpBotGoal(b){
   b.roamC=null;
   if(mpMode==='tdm'){const e=mpNearestEnemy(b);return e.tgt?{x:e.tgt.x,y:e.tgt.y}:null;}
+  if(mpMode==='kc'){let best=null,bd=420;for(const tg of mpTags){const d=Math.hypot(tg.x-b.x,tg.y-b.y);if(d<bd){bd=d;best=tg;}}if(best)return {x:best.x,y:best.y};const e=mpNearestEnemy(b);return e.tgt?{x:e.tgt.x,y:e.tgt.y}:null;}
   if(mpMode==='dom'){ // head to a zone we DON'T own (capture/contest); once it's ours, move on
     let best=null,bd=1e9;
     for(const z of mpZones){if(z.owner===b.team)continue;const w=(z.capTeam&&z.capTeam!==b.team)?0.6:1;const d=Math.hypot(z.x-b.x,z.y-b.y)*w;if(d<bd){bd=d;best=z;}}
@@ -3602,9 +3606,10 @@ function gunGameEquip(tier){
 function mpKill(killer,victim){
   victim.alive=false;victim.respawnT=MP_RESPAWN;victim.deaths=(victim.deaths||0)+1;spawnBlood(victim.x,victim.y,16);spawnGibs(victim.x,victim.y);spawnDecal(victim.x,victim.y,14);
   let kt=null;
-  if(killer==='me'){kt='blue';mpMe.kills++;mpMe.points+=100;sessionCoins+=2;sndKill();}
+  if(killer==='me'){kt='blue';mpMe.kills++;mpMe.points+=100;sessionCoins+=2;sndKill();mpMe.streak=(mpMe.streak||0)+1;mpCheckStreak();}
   else if(killer&&killer.team){kt=killer.team;killer.kills=(killer.kills||0)+1;killer.points=(killer.points||0)+100;}
   pushKillfeed(killer==='me'?mpMe.name:(killer&&killer.name)||'',victim.name,kt); // killfeed entry
+  if(mpMode==='kc')mpTags.push({x:victim.x,y:victim.y,team:victim.team,life:12,pulse:0}); // dog-tag drops; grab to confirm/deny
   if(mpMode==='gungame'){
     // Individual ladder: advance the killer's tier; team score tracks its best tier (drives the win check).
     if(killer==='me'){mpMe.tier=(mpMe.tier||0)+1;gunGameEquip(mpMe.tier);mpScore.blue=Math.max(mpScore.blue,mpMe.tier);
@@ -3636,9 +3641,24 @@ function mpCheckCapture(c,cteam){
   if(!c.carryFlag)return;const mine=mpFlags[cteam],homeOk=!mine.carrier&&Math.hypot(mine.pos.x-mine.home.x,mine.pos.y-mine.home.y)<12;
   if(homeOk&&Math.hypot(c.x-mine.home.x,c.y-mine.home.y)<34){mpScore[cteam]++;const ef=mpFlags[c.carryFlag];ef.carrier=null;ef.pos={x:ef.home.x,y:ef.home.y};ef.downT=0;c.carryFlag=null;addNotif((cteam==='blue'?'BLUE':'RED')+' CAPTURED THE FLAG!','#ffd24a',4);if(c===player){mpMe.points+=300;sessionCoins+=20;}else c.points=(c.points||0)+300;}
 }
+// ── Killstreak rewards (player-earned) ───────────────────────────────────────
+function mpCheckStreak(){const s=mpMe.streak||0;
+  if(s===3){mpUavT=9;addNotif('📡 UAV online — enemies revealed','#7fd4ff',3);sndUI();}
+  else if(s===5){mpDeploySentry();addNotif('🔫 Sentry gun deployed!','#ffd24a',3);}
+  else if(s===7){mpCallStrike();addNotif('🛩 Airstrike inbound!','#ff8800',3);}
+}
+function mpDeploySentry(){const a=player.angle;mpSentries.push({x:player.x+Math.cos(a)*44,y:player.y+Math.sin(a)*44,angle:a,fireCd:0,life:22});if(mpSentries.length>2)mpSentries.shift();}
+function updateMpSentries(dt){mpSentries=mpSentries.filter(s=>{s.life-=dt;if(s.life<=0)return false;
+  let best=null,bd=360;for(const o of bots){if(!o.alive||o.team!=='red'||o.spawnProt>0)continue;const d=Math.hypot(o.x-s.x,o.y-s.y);if(d<bd&&losClear(s.x,s.y,o.x,o.y)){bd=d;best=o;}}
+  if(best){s.angle=Math.atan2(best.y-s.y,best.x-s.x);s.fireCd-=dt;if(s.fireCd<=0){const a=s.angle+rand(-0.05,0.05);bullets.push({x:s.x,y:s.y,vx:Math.cos(a)*640,vy:Math.sin(a)*640,dmg:16,life:1.2,color:'#aee0ff',fromPlayer:false,team:'blue',owner:'me',br:4});spawnMuzzle(s.x+Math.cos(a)*14,s.y+Math.sin(a)*14,a);s.fireCd=0.2;}}
+  return true;});}
+function mpCallStrike(){let ax=0,ay=0,n=0;for(const o of bots){if(o.alive&&o.team==='red'){ax+=o.x;ay+=o.y;n++;}}if(n){ax/=n;ay/=n;}else{ax=player.x;ay=player.y;}
+  const dir=Math.random()<0.5?0:Math.PI/2;for(let i=0;i<10;i++){const t=(i-4.5)*72;mpStrikes.push({x:ax+Math.cos(dir)*t,y:ay+Math.sin(dir)*t,delay:0.8+i*0.16});}}
+function updateMpStrikes(dt){mpStrikes=mpStrikes.filter(b=>{b.delay-=dt;if(b.delay<=0){if(!isWall(b.x,b.y))mpExplode(b.x,b.y,110,150);return false;}return true;});}
 function updateMpRules(dt){
   if(mpEnded)return;
   if(playerDownT>0){playerDownT-=dt;if(playerDownT<=0)mpRespawnPlayer();}
+  if(mpUavT>0)mpUavT-=dt;updateMpSentries(dt);updateMpStrikes(dt);
   // out-of-combat health regen (after 7s with no damage, the bar climbs back up)
   player.dmgT=(player.dmgT||0)+dt;if(playerDownT<=0&&player.dmgT>7&&player.hp<player.maxHp)player.hp=Math.min(player.maxHp,player.hp+25*dt);
   if(player.reloadT>0){player.reloadT-=dt;if(player.reloadT<=0){player.mag=player.magMax;addNotif('Reloaded','#9aa0a6',1);}}
@@ -3650,6 +3670,16 @@ function updateMpRules(dt){
     if(playerDownT<=0){mpCheckFlag(player,'blue');mpCheckCapture(player,'blue');}
     for(const b of bots)if(b.alive){mpCheckFlag(b,b.team);mpCheckCapture(b,b.team);}
     for(const t of ['blue','red']){const f=mpFlags[t];if(f.carrier){f.pos.x=f.carrier.x;f.pos.y=f.carrier.y;}}
+  }
+  else if(mpMode==='kc'){
+    mpTags=mpTags.filter(tg=>{tg.life-=dt;tg.pulse=(tg.pulse||0)+dt*4;if(tg.life<=0)return false;
+      const grab=(c,team)=>{if(Math.hypot(c.x-tg.x,c.y-tg.y)>26)return false;
+        if(team!==tg.team){mpScore[team]++;if(c===player){mpMe.points+=50;addNotif('✔ Kill confirmed','#7fd4ff',1.2);sndPickup('cash');}else c.points=(c.points||0)+50;} // confirm
+        else if(c===player){addNotif('✖ Kill denied','#ff8585',1.2);} // own team denies (no score)
+        return true;};
+      if(playerDownT<=0&&grab(player,'blue'))return false;
+      for(const o of bots){if(o.alive&&grab(o,o.team))return false;}
+      return true;});
   }
   if(mpScore.blue>=mpScoreLimit||mpScore.red>=mpScoreLimit||mpTimer<=0)mpEnd();
 }
@@ -3683,6 +3713,19 @@ function drawBot(b,camX,camY){
   if(b.carryFlag){ctx.fillStyle=b.carryFlag==='blue'?MP_BLUE:MP_RED;ctx.fillRect(sx-1,sy-38,3,12);ctx.fillRect(sx+2,sy-38,8,5);}
   if(b.hitT>0.5){ctx.globalAlpha=(b.hitT-0.5)*2;ctx.strokeStyle='#ffdd44';ctx.lineWidth=2;ctx.beginPath();ctx.arc(sx,sy,19,0,Math.PI*2);ctx.stroke();ctx.fillStyle='#ffdd44';ctx.font='bold 11px Courier New';ctx.fillText('!',sx,sy-40);ctx.globalAlpha=1;} // alerted/just hit
   if(b.spawnProt>0){ctx.globalAlpha=0.3+Math.sin(performance.now()/90)*0.15;ctx.strokeStyle='#9fd0ff';ctx.lineWidth=2;ctx.beginPath();ctx.arc(sx,sy,18,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;} // spawn protection
+}
+function drawMpExtras(camX,camY){
+  // Kill Confirmed dog-tags
+  for(const tg of mpTags){const sx=tg.x-camX,sy=tg.y-camY,col=tg.team==='blue'?MP_BLUE:MP_RED,pz=Math.sin(tg.pulse||0)*2;
+    ctx.globalAlpha=Math.min(1,tg.life/2);ctx.fillStyle=col;ctx.shadowColor=col;ctx.shadowBlur=10;
+    ctx.fillRect(sx-3,sy-6+pz,6,12);ctx.beginPath();ctx.arc(sx,sy-8+pz,2,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;ctx.globalAlpha=1;}
+  // Sentry guns
+  for(const s of mpSentries){const sx=s.x-camX,sy=s.y-camY;
+    ctx.fillStyle='rgba(0,0,0,0.35)';ctx.beginPath();ctx.ellipse(sx+2,sy+5,12,6,0,0,Math.PI*2);ctx.fill();
+    ctx.save();ctx.translate(sx,sy);ctx.fillStyle='#2b6fa0';ctx.beginPath();ctx.arc(0,0,11,0,Math.PI*2);ctx.fill();ctx.rotate(s.angle);ctx.fillStyle='#aee0ff';ctx.fillRect(4,-3,16,6);ctx.restore();
+    if(s.life<4){ctx.globalAlpha=Math.sin(performance.now()/100)*0.5+0.5;ctx.fillStyle='#ffd24a';ctx.fillRect(sx-12,sy-20,24*Math.max(0,s.life/4),3);ctx.globalAlpha=1;}}
+  // Airstrike target rings (before the bombs land)
+  for(const b of mpStrikes){if(b.delay>0.2){const sx=b.x-camX,sy=b.y-camY;ctx.strokeStyle='rgba(255,80,40,0.8)';ctx.lineWidth=2;ctx.beginPath();ctx.arc(sx,sy,40*Math.min(1,b.delay),0,Math.PI*2);ctx.stroke();ctx.beginPath();ctx.moveTo(sx-8,sy);ctx.lineTo(sx+8,sy);ctx.moveTo(sx,sy-8);ctx.lineTo(sx,sy+8);ctx.stroke();}}
 }
 function drawMpZones(camX,camY){
   const t=performance.now()/1000,p=Math.sin(t*3)*0.3+0.7;
@@ -3740,6 +3783,11 @@ function drawMpHUD(){
   const bw=340,bx=W/2-bw/2;
   ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(bx,12,bw,42);ctx.strokeStyle='#333';ctx.lineWidth=1;ctx.strokeRect(bx,12,bw,42);
   drawKillfeed();
+  // UAV recon: red chevrons toward each living enemy (clamped to the screen)
+  if(mpUavT>0){const cxw=Math.round(player.x-W/2),cyw=Math.round(player.y-H/2);
+    for(const o of bots){if(!o.alive||o.team!=='red')continue;const cx2=clamp(o.x-cxw,16,W-16),cy2=clamp(o.y-cyw,60,H-70);ctx.fillStyle='rgba(255,70,70,0.85)';ctx.beginPath();ctx.moveTo(cx2,cy2-6);ctx.lineTo(cx2-5,cy2+4);ctx.lineTo(cx2+5,cy2+4);ctx.closePath();ctx.fill();}}
+  // Killstreak progress (bottom-left)
+  if((mpMe.streak||0)>0){const nxt=mpMe.streak<3?'UAV @3':mpMe.streak<5?'Sentry @5':mpMe.streak<7?'Airstrike @7':'MAX';ctx.fillStyle='#ffd24a';ctx.font='bold 10px Courier New';ctx.textAlign='left';ctx.fillText('🔥 STREAK '+mpMe.streak+'  ·  next: '+nxt,14,H-66);}
   ctx.textAlign='left';ctx.fillStyle=MP_BLUE;ctx.font='bold 24px Courier New';ctx.fillText(mpScore.blue,bx+16,42);
   ctx.textAlign='right';ctx.fillStyle=MP_RED;ctx.fillText(mpScore.red,bx+bw-16,42);
   ctx.textAlign='center';ctx.fillStyle='#eee';ctx.font='bold 11px Courier New';ctx.fillText(MP_MODES[mpMode].name,W/2,28);
@@ -3797,7 +3845,7 @@ function startMultiplayer(modeId){
   }
   spawnBots();
   const ps=mpSpawnPos('blue');player.x=ps.x;player.y=ps.y;player.invincible=2.5;
-  killfeed=[];mpScoreboard=false;
+  killfeed=[];mpScoreboard=false;mpUavT=0;mpSentries=[];mpStrikes=[];mpTags=[];mpMe.streak=0;
   mpCommitted=false;startCountdown=5;
   state=STATE.PLAYING;gameStartTime=performance.now()/1000;ensureAudio();startAmbient();
   addNotif(MP_MODES[modeId].name+' — '+MP_MODES[modeId].desc,'#7fd4ff',5);
@@ -3840,7 +3888,7 @@ function loop(now){
     else if(gameMode==='mp'){drawWorld(camX,camY);drawDebris(camX,camY);}
     else{drawWorld(camX,camY);drawDebris(camX,camY);drawMapObjects(camX,camY);}
     drawDecals(camX,camY); // blood pools sit on the ground, under everything
-    if(gameMode==='mp')drawMpZones(camX,camY);
+    if(gameMode==='mp'){drawMpZones(camX,camY);drawMpExtras(camX,camY);}
     drawBuiltWalls(camX,camY);drawDeployables(camX,camY);drawAirBombs(camX,camY);drawPickups(camX,camY);drawParticles(camX,camY);
     drawGrenades(camX,camY);drawBullets(camX,camY);drawArcs(camX,camY);
     enemies.forEach(e=>drawEnemy(e,camX,camY));
