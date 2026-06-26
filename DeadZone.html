@@ -450,7 +450,7 @@ const touchMove={active:false,dx:0,dy:0}; // mobile left-stick movement (desktop
 // keyup misses the stored 'S' and the key sticks (character won't stop moving).
 function normKey(k){return k.length===1?k.toLowerCase():k;}
 // Window/tab losing focus drops keyup events → clear everything so nothing sticks.
-window.addEventListener('blur',()=>{for(const k in keys)keys[k]=false;mouse.down=false;});
+window.addEventListener('blur',()=>{for(const k in keys)keys[k]=false;mouse.down=false;mpScoreboard=false;});
 
 document.addEventListener('keydown',e=>{
   // Inventory arrow navigation — consume before anything else
@@ -472,7 +472,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='n'||e.key==='N'){toggleMute();return;}
   const camp=(gameMode==='campaign');
 
-  if(e.key==='Tab'){e.preventDefault();if(!camp&&state===STATE.PLAYING){inventoryOpen=!inventoryOpen;if(inventoryOpen){inventorySelected=Math.max(0,ALL_WEAPONS.indexOf(player.weapon));bigMapOpen=false;buyStationOpen=false;workshopOpen=false;}}return;}
+  if(e.key==='Tab'){e.preventDefault();if(gameMode==='mp'){if(state===STATE.PLAYING)mpScoreboard=true;return;}if(!camp&&state===STATE.PLAYING){inventoryOpen=!inventoryOpen;if(inventoryOpen){inventorySelected=Math.max(0,ALL_WEAPONS.indexOf(player.weapon));bigMapOpen=false;buyStationOpen=false;workshopOpen=false;}}return;}
   if(e.key==='m'||e.key==='M'){if(!camp&&(state===STATE.PLAYING||state===STATE.PAUSED)){bigMapOpen=!bigMapOpen;if(bigMapOpen){inventoryOpen=false;buyStationOpen=false;workshopOpen=false;}}return;}
   if(e.key==='Escape'){
     if(bigMapOpen){bigMapOpen=false;return;}
@@ -529,7 +529,7 @@ document.addEventListener('keydown',e=>{
     }
   }
 });
-document.addEventListener('keyup',e=>{keys[normKey(e.key)]=false;});
+document.addEventListener('keyup',e=>{keys[normKey(e.key)]=false;if(e.key==='Tab')mpScoreboard=false;});
 canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.x=(e.clientX-r.left)*(W/r.width);mouse.y=(e.clientY-r.top)*(H/r.height);});
 canvas.addEventListener('mousedown',e=>{ensureAudio();mouse.down=true;handleClick(e);});
 canvas.addEventListener('mouseup',()=>{mouse.down=false;});
@@ -951,7 +951,7 @@ function bteamOf(b){return b.team||(b.fromPlayer?'blue':'red');}
 // MP explosive splash (rocket etc.) — mirrors explodeGrenade's RED-bot loop.
 function mpExplode(x,y,radius,dmg){
   spawnExplosion(x,y,Math.max(12,Math.round(radius/5)));spawnSmoke(x,y,5);spawnSparks(x,y,12);addLight(x,y,radius*1.7,'rgba(255,160,60,A?)',0.18);sndExplosion(radius/130);addShake(10,0.35);
-  for(const o of bots){if(!o.alive||o.team!=='red')continue;const d=Math.hypot(o.x-x,o.y-y);if(d<radius){const dv=dmg*(1-d/radius);o.hp-=dv;o.dmgT=0;botHurt(o,x,y);popDmg(o.x,o.y,dv,{color:'#ffae42'});const dead=o.hp<=0;if(dead)mpKill('me',o);hitMark(dead);}}
+  for(const o of bots){if(!o.alive||o.team!=='red'||o.spawnProt>0)continue;const d=Math.hypot(o.x-x,o.y-y);if(d<radius){const dv=dmg*(1-d/radius);o.hp-=dv;o.dmgT=0;botHurt(o,x,y);popDmg(o.x,o.y,dv,{color:'#ffae42'});const dead=o.hp<=0;if(dead)mpKill('me',o);hitMark(dead);}}
 }
 // Flamethrower: drop a brief fire patch just ahead of the player (firePatches update applies the DoT).
 function fireFlame(w){
@@ -1071,9 +1071,9 @@ function explodeAt(x,y,radius,dmg,shake){
 function explodeGrenade(g){
   if(gameMode==='mp'){ // thrower team (player=BLUE, or a bot via g.team) hits the opposing team
     const gt=g.team||'blue',foe=gt==='blue'?'red':'blue',killer=g.owner||(gt==='blue'?'me':null);
-    if(g.type==='flashbang'){spawnExplosion(g.x,g.y,8);for(const o of bots){if(o.alive&&o.team===foe&&Math.hypot(o.x-g.x,o.y-g.y)<240)o.stun=Math.max(o.stun||0,3.5);}if(foe==='blue'&&playerDownT<=0&&Math.hypot(player.x-g.x,player.y-g.y)<240)triggerFlash('255,255,255',0.6);return;}
+    if(g.type==='flashbang'){spawnExplosion(g.x,g.y,8);for(const o of bots){if(o.alive&&o.team===foe&&!(o.spawnProt>0)&&Math.hypot(o.x-g.x,o.y-g.y)<240)o.stun=Math.max(o.stun||0,3.5);}if(foe==='blue'&&playerDownT<=0&&Math.hypot(player.x-g.x,player.y-g.y)<240)triggerFlash('255,255,255',0.6);return;}
     spawnExplosion(g.x,g.y,16);spawnSmoke(g.x,g.y,4);addLight(g.x,g.y,200,'rgba(255,160,60,A?)',0.18);sndExplosion(1);addShake(11,0.35);
-    for(const o of bots){if(!o.alive||o.team!==foe)continue;const d=Math.hypot(o.x-g.x,o.y-g.y);if(d<160){o.hp-=120*(1-d/160);o.dmgT=0;botHurt(o,g.x,g.y);if(o.hp<=0)mpKill(killer,o);}}
+    for(const o of bots){if(!o.alive||o.team!==foe||o.spawnProt>0)continue;const d=Math.hypot(o.x-g.x,o.y-g.y);if(d<160){o.hp-=120*(1-d/160);o.dmgT=0;botHurt(o,g.x,g.y);if(o.hp<=0)mpKill(killer,o);}}
     if(foe==='blue'&&playerDownT<=0){const d=Math.hypot(player.x-g.x,player.y-g.y);if(d<160&&player.invincible<=0){takeDamage(120*(1-d/160));player.invincible=0.25;addShake(7,0.25);}}
     return;
   }
@@ -3393,6 +3393,7 @@ const MP_DIFF={
 };
 const BOT_NAMES=['VIPER','GHOST','REAPER','HAWK','RAZOR','NOMAD','BLAZE','FROST','SABLE','TALON','ROOK','ECHO','WRAITH','COBRA','ONYX','JINX'];
 let killfeed=[]; // recent kills: {a,b,col,t}
+let mpScoreboard=false; // Tab-held scoreboard overlay
 function pushKillfeed(a,b,team){killfeed.unshift({a:a||'',b:b||'',col:team==='blue'?MP_BLUE:team==='red'?MP_RED:'#999',t:performance.now()/1000});if(killfeed.length>6)killfeed.pop();}
 // A bot just got hurt — remember where the shot came from and snap to alertness.
 function botHurt(o,fx,fy){if(!o||o===player)return;o.hitT=0.9;o.hitFromX=fx;o.hitFromY=fy;o.react=Math.min(o.react||0,0.05);}
@@ -3465,7 +3466,7 @@ function mpSpawnPos(team){
   return best||{x:tcx(Math.floor(MAP_W/2)),y:tcx(Math.floor(MAP_H/2))};
 }
 function makeBot(team){const s=mpSpawnPos(team);return {x:s.x,y:s.y,hp:100,maxHp:100,angle:0,team,alive:true,respawnT:0,fireCd:rand(0,1),spd:rand(150,180),role:'',carryFlag:null,stuckT:0,detourT:0,ox:rand(-46,46),oy:rand(-46,46),name:'',kills:0,deaths:0,points:0,tier:0,
-  seen:null,react:0,hitT:0,hitFromX:0,hitFromY:0,nades:2,nadeCd:rand(4,10)};}
+  seen:null,react:0,hitT:0,hitFromX:0,hitFromY:0,nades:2,nadeCd:rand(4,10),spawnProt:2.5};}
 function spawnBots(){
   bots=[];
   const pool=BOT_NAMES.slice().sort(()=>Math.random()-0.5); // shuffled callsigns
@@ -3474,7 +3475,7 @@ function spawnBots(){
   for(let i=0;i<mpTeamSize;i++){const b=makeBot('red'); b.name=pool.pop()||('E'+(i+1));bots.push(b);}
   if(mpMode==='ctf')bots.forEach((b,i)=>b.role=(i%2===0)?'attack':'defend');
 }
-function respawnBot(b){const s=mpSpawnPos(b.team);b.alive=true;b.hp=b.maxHp;b.x=s.x;b.y=s.y;b.respawnT=0;b.carryFlag=null;b.seen=null;b.react=0;b.hitT=0;b.nades=2;b.nadeCd=rand(4,9);}
+function respawnBot(b){const s=mpSpawnPos(b.team);b.alive=true;b.hp=b.maxHp;b.x=s.x;b.y=s.y;b.respawnT=0;b.carryFlag=null;b.seen=null;b.react=0;b.hitT=0;b.nades=2;b.nadeCd=rand(4,9);b.spawnProt=2.5;}
 
 function mpPlayerDown(){if(playerDownT>0)return;playerDownT=MP_RESPAWN;mpMe.deaths++;if(mpMode==='tdm')mpScore.red++;mpFlagDropFrom(player);addShake(12,0.4);addNotif('You were killed — respawning…','#ff8585',3);}
 function mpRespawnPlayer(){const s=mpSpawnPos('blue');player.hp=player.maxHp;player.x=s.x;player.y=s.y;player.invincible=2;player.lastStand=false;player.dmgT=99;player.mag=player.magMax;player.reloadT=0;playerDownT=0;if(mpMode==='gungame')gunGameEquip(mpMe.tier||0);}
@@ -3539,6 +3540,7 @@ function updateBots(dt){
     b.dmgT=(b.dmgT||0)+dt;if(b.dmgT>7&&b.hp<b.maxHp)b.hp=Math.min(b.maxHp,b.hp+25*dt); // out-of-combat health regen
     if(b.hitT>0)b.hitT-=dt;
     if(b.nadeCd>0)b.nadeCd-=dt;
+    if(b.spawnProt>0)b.spawnProt-=dt;
     if(b.stun>0){b.stun-=dt;continue;}                                                  // flashbanged: frozen
     const e=mpNearestEnemy(b);
     let goal=mpBotGoal(b);
@@ -3581,7 +3583,7 @@ function updateMpBullets(dt){
     b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
     if(b.life<=0||isWall(b.x,b.y)){if(b.explosive&&bteamOf(b)==='blue')mpExplode(b.x,b.y,b.blast,b.dmg);return false;}
     const bteam=bteamOf(b);
-    for(const o of bots){if(!o.alive||o.team===bteam)continue;if(Math.hypot(b.x-o.x,b.y-o.y)<15+(b.br||4)){
+    for(const o of bots){if(!o.alive||o.team===bteam||o.spawnProt>0)continue;if(Math.hypot(b.x-o.x,b.y-o.y)<15+(b.br||4)){
       if(b.explosive){if(bteam==='blue')mpExplode(b.x,b.y,b.blast,b.dmg);return false;}
       const fx=b.owner==='me'?player.x:(b.owner&&b.owner.x!=null?b.owner.x:b.x),fy=b.owner==='me'?player.y:(b.owner&&b.owner.y!=null?b.owner.y:b.y);
       if(b.pierce){if(!b.hit)b.hit=new Set();if(b.hit.has(o))continue;b.hit.add(o);o.hp-=b.dmg;o.dmgT=0;spawnBlood(o.x,o.y,6);botHurt(o,fx,fy);if(b.owner==='me'){popDmg(o.x,o.y,b.dmg);hitMark(o.hp<=0);}if(o.hp<=0)mpKill(b.owner||(b.fromPlayer?'me':null),o);continue;}
@@ -3680,6 +3682,7 @@ function drawBot(b,camX,camY){
   if(b.team==='blue'){ctx.fillStyle='rgba(120,220,160,0.9)';ctx.font='bold 9px Courier New';ctx.textAlign='center';ctx.fillText('▲',sx,sy-29);}
   if(b.carryFlag){ctx.fillStyle=b.carryFlag==='blue'?MP_BLUE:MP_RED;ctx.fillRect(sx-1,sy-38,3,12);ctx.fillRect(sx+2,sy-38,8,5);}
   if(b.hitT>0.5){ctx.globalAlpha=(b.hitT-0.5)*2;ctx.strokeStyle='#ffdd44';ctx.lineWidth=2;ctx.beginPath();ctx.arc(sx,sy,19,0,Math.PI*2);ctx.stroke();ctx.fillStyle='#ffdd44';ctx.font='bold 11px Courier New';ctx.fillText('!',sx,sy-40);ctx.globalAlpha=1;} // alerted/just hit
+  if(b.spawnProt>0){ctx.globalAlpha=0.3+Math.sin(performance.now()/90)*0.15;ctx.strokeStyle='#9fd0ff';ctx.lineWidth=2;ctx.beginPath();ctx.arc(sx,sy,18,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;} // spawn protection
 }
 function drawMpZones(camX,camY){
   const t=performance.now()/1000,p=Math.sin(t*3)*0.3+0.7;
@@ -3707,6 +3710,31 @@ function drawKillfeed(){
     ctx.fillStyle=k.col;ctx.fillText(k.a,x-vw-bw,y);
     y+=16;}
   ctx.globalAlpha=1;
+}
+function mpRoster(){
+  const blue=[{name:mpMe.name,kills:mpMe.kills,deaths:mpMe.deaths,points:mpMe.points,tier:mpMe.tier,me:true}],red=[];
+  for(const b of bots)(b.team==='blue'?blue:red).push({name:b.name,kills:b.kills||0,deaths:b.deaths||0,points:b.points||0,tier:b.tier||0});
+  const sf=(a,c)=>(mpMode==='gungame'?(c.tier-a.tier):(c.points-a.points))||(c.kills-a.kills);
+  blue.sort(sf);red.sort(sf);return {blue,red};
+}
+function drawScoreboard(){
+  const R=mpRoster(),w=Math.min(460,W-60),x=W/2-w/2;
+  const headH=50,teamH=22,rowH=20,h=headH+(R.blue.length+R.red.length)*rowH+2*teamH+18,y=Math.max(56,H/2-h/2);
+  fillRR(x,y,w,h,10,'rgba(8,8,12,0.94)');strokeRR(x,y,w,h,10,'#333',1);
+  ctx.textAlign='center';ctx.fillStyle='#eee';ctx.font='bold 15px Courier New';ctx.fillText('SCOREBOARD — '+MP_MODES[mpMode].name,x+w/2,y+22);
+  const mm=Math.max(0,Math.floor(mpTimer/60)),ss=Math.max(0,Math.floor(mpTimer%60));
+  ctx.fillStyle='#9aa0a6';ctx.font='10px Courier New';ctx.fillText(`${mm}:${ss<10?'0':''}${ss}  ·  first to ${mpScoreLimit}`,x+w/2,y+38);
+  const valLbl=mpMode==='gungame'?'TIER':'PTS';let cy=y+headH;
+  const section=(label,list,color,score)=>{
+    ctx.fillStyle=color;ctx.fillRect(x+8,cy,w-16,18);ctx.fillStyle='#04121f';ctx.textAlign='left';ctx.font='bold 11px Courier New';ctx.fillText(label+'  ('+score+')',x+14,cy+13);
+    ctx.textAlign='right';ctx.fillText(valLbl,x+w-150,cy+13);ctx.fillText('K',x+w-96,cy+13);ctx.fillText('D',x+w-56,cy+13);ctx.fillText('K/D',x+w-16,cy+13);cy+=teamH;
+    for(const p of list){ctx.textAlign='left';ctx.fillStyle=p.me?'#ffd24a':'#dcdce0';ctx.font=(p.me?'bold ':'')+'11px Courier New';ctx.fillText(p.name,x+14,cy+13);
+      const val=mpMode==='gungame'?(p.tier+1):p.points;ctx.textAlign='right';ctx.fillStyle='#b8b8be';ctx.font='11px Courier New';
+      ctx.fillText(''+val,x+w-150,cy+13);ctx.fillText(''+p.kills,x+w-96,cy+13);ctx.fillText(''+p.deaths,x+w-56,cy+13);ctx.fillText((p.deaths?p.kills/p.deaths:p.kills).toFixed(1),x+w-16,cy+13);cy+=rowH;}
+    cy+=6;
+  };
+  section('BLUE',R.blue,MP_BLUE,mpScore.blue);section('RED',R.red,MP_RED,mpScore.red);
+  ctx.textAlign='center';ctx.fillStyle='#5a5a62';ctx.font='9px Courier New';ctx.fillText('hold [Tab]',x+w/2,y+h-7);
 }
 function drawMpHUD(){
   const bw=340,bx=W/2-bw/2;
@@ -3736,6 +3764,8 @@ function drawMpHUD(){
   if(empty){ctx.fillStyle='#ff6666';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('PRESS R TO RELOAD',W/2,H-78);}
   if(player.carryFlag){ctx.fillStyle='#ffd24a';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('🚩 You have the enemy flag — get it home!',W/2,H-60);}
   if(playerDownT>0){ctx.fillStyle='rgba(120,0,0,0.45)';ctx.fillRect(0,0,W,H);ctx.fillStyle='#fff';ctx.font='bold 40px Courier New';ctx.textAlign='center';ctx.fillText('RESPAWNING',W/2,H/2-10);ctx.fillStyle='#ffd24a';ctx.font='bold 30px Courier New';ctx.fillText(Math.ceil(playerDownT)+'s',W/2,H/2+30);}
+  else if(!mpScoreboard){ctx.fillStyle='#5a5a62';ctx.font='9px Courier New';ctx.textAlign='left';ctx.fillText('[Tab] scoreboard',14,H-58);}
+  if(mpScoreboard)drawScoreboard();
 }
 function drawMatchEnd(){
   const draw=mpScore.blue===mpScore.red,won=mpScore.blue>mpScore.red;
@@ -3766,7 +3796,8 @@ function startMultiplayer(modeId){
     player.grenades={frag:lo.lethal==='frag'?2:0,molotov:lo.lethal==='molotov'?2:0,flashbang:2};player.selectedGrenade=lo.lethal;
   }
   spawnBots();
-  const ps=mpSpawnPos('blue');player.x=ps.x;player.y=ps.y;
+  const ps=mpSpawnPos('blue');player.x=ps.x;player.y=ps.y;player.invincible=2.5;
+  killfeed=[];mpScoreboard=false;
   mpCommitted=false;startCountdown=5;
   state=STATE.PLAYING;gameStartTime=performance.now()/1000;ensureAudio();startAmbient();
   addNotif(MP_MODES[modeId].name+' — '+MP_MODES[modeId].desc,'#7fd4ff',5);
