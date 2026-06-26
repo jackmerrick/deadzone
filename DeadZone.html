@@ -951,7 +951,7 @@ function bteamOf(b){return b.team||(b.fromPlayer?'blue':'red');}
 // MP explosive splash (rocket etc.) — mirrors explodeGrenade's RED-bot loop.
 function mpExplode(x,y,radius,dmg){
   spawnExplosion(x,y,Math.max(12,Math.round(radius/5)));spawnSmoke(x,y,5);spawnSparks(x,y,12);addLight(x,y,radius*1.7,'rgba(255,160,60,A?)',0.18);sndExplosion(radius/130);addShake(10,0.35);
-  for(const o of bots){if(!o.alive||o.team!=='red')continue;const d=Math.hypot(o.x-x,o.y-y);if(d<radius){const dv=dmg*(1-d/radius);o.hp-=dv;o.dmgT=0;popDmg(o.x,o.y,dv,{color:'#ffae42'});const dead=o.hp<=0;if(dead)mpKill('me',o);hitMark(dead);}}
+  for(const o of bots){if(!o.alive||o.team!=='red')continue;const d=Math.hypot(o.x-x,o.y-y);if(d<radius){const dv=dmg*(1-d/radius);o.hp-=dv;o.dmgT=0;botHurt(o,x,y);popDmg(o.x,o.y,dv,{color:'#ffae42'});const dead=o.hp<=0;if(dead)mpKill('me',o);hitMark(dead);}}
 }
 // Flamethrower: drop a brief fire patch just ahead of the player (firePatches update applies the DoT).
 function fireFlame(w){
@@ -1069,10 +1069,12 @@ function explodeAt(x,y,radius,dmg,shake){
   enemies.forEach(e=>{if(!e.alive)return;const d=Math.hypot(e.x-x,e.y-y);if(d<radius+e.r){const dv=dmg*(1-d/(radius+e.r));e.hp-=dv;popDmg(e.x,e.y,dv,{color:'#ffae42'});const dead=e.hp<=0;hitMark(dead);if(dead)killEnemy(e);}});
 }
 function explodeGrenade(g){
-  if(gameMode==='mp'){ // grenades only thrown by the player (BLUE) → affect RED bots
-    if(g.type==='flashbang'){spawnExplosion(g.x,g.y,8);for(const o of bots){if(o.alive&&o.team==='red'&&Math.hypot(o.x-g.x,o.y-g.y)<240)o.stun=Math.max(o.stun||0,3.5);}return;}
-    spawnExplosion(g.x,g.y,16);addShake(11,0.35);
-    for(const o of bots){if(!o.alive||o.team!=='red')continue;const d=Math.hypot(o.x-g.x,o.y-g.y);if(d<160){o.hp-=120*(1-d/160);o.dmgT=0;if(o.hp<=0)mpKill('me',o);}}
+  if(gameMode==='mp'){ // thrower team (player=BLUE, or a bot via g.team) hits the opposing team
+    const gt=g.team||'blue',foe=gt==='blue'?'red':'blue',killer=g.owner||(gt==='blue'?'me':null);
+    if(g.type==='flashbang'){spawnExplosion(g.x,g.y,8);for(const o of bots){if(o.alive&&o.team===foe&&Math.hypot(o.x-g.x,o.y-g.y)<240)o.stun=Math.max(o.stun||0,3.5);}if(foe==='blue'&&playerDownT<=0&&Math.hypot(player.x-g.x,player.y-g.y)<240)triggerFlash('255,255,255',0.6);return;}
+    spawnExplosion(g.x,g.y,16);spawnSmoke(g.x,g.y,4);addLight(g.x,g.y,200,'rgba(255,160,60,A?)',0.18);sndExplosion(1);addShake(11,0.35);
+    for(const o of bots){if(!o.alive||o.team!==foe)continue;const d=Math.hypot(o.x-g.x,o.y-g.y);if(d<160){o.hp-=120*(1-d/160);o.dmgT=0;botHurt(o,g.x,g.y);if(o.hp<=0)mpKill(killer,o);}}
+    if(foe==='blue'&&playerDownT<=0){const d=Math.hypot(player.x-g.x,player.y-g.y);if(d<160&&player.invincible<=0){takeDamage(120*(1-d/160));player.invincible=0.25;addShake(7,0.25);}}
     return;
   }
   if(g.type==='frag'){explodeAt(g.x,g.y,155,300,13);}
@@ -2978,14 +2980,20 @@ function drawMultiplayerSelect(){
   backButton();
   mButton(W-186,150,162,30,'✦ EDIT LOADOUT',{id:'mp_loadout',fg:C.BLUE_SOFT,glow:C.BLUE,fs:12,r:8,action:()=>{menuView='loadout';}});
   ctx.fillStyle=C.GOLD;ctx.shadowColor=C.GOLD;ctx.shadowBlur=14;ctx.font=mFont(24,'bold');ctx.textAlign='center';ctx.fillText('MULTIPLAYER',W/2,176);ctx.shadowBlur=0;
-  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(11);ctx.fillText('You + allied bots (BLUE) vs enemy bots (RED). Respawns on.',W/2,198);
+  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(11);ctx.fillText('You + allied bots (BLUE) vs enemy bots (RED). Respawns on.',W/2,196);
+  const lx=W/2-200;
   // Team-size toggle (applies to every mode)
-  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(10,'bold');ctx.textAlign='center';ctx.fillText('TEAM SIZE',W/2-92,221);
+  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(10,'bold');ctx.textAlign='left';ctx.fillText('TEAM SIZE',lx,225);
   [[2,'2v2'],[4,'4v4']].forEach(([sz,lbl],i)=>{
-    mButton(W/2-40+i*76,210,68,24,lbl,{id:'mp_ts'+sz,active:mpTeamSize===sz,activeFill:C.BLUE,activeBorder:C.BLUE_SOFT,activeFg:'#04121f',glow:mpTeamSize===sz?C.BLUE:C.BORDER_HI,fs:12,r:7,action:()=>{mpTeamSize=sz;}});
+    mButton(lx+90+i*70,210,64,24,lbl,{id:'mp_ts'+sz,active:mpTeamSize===sz,activeFill:C.BLUE,activeBorder:C.BLUE_SOFT,activeFg:'#04121f',glow:mpTeamSize===sz?C.BLUE:C.BORDER_HI,fs:12,r:7,action:()=>{mpTeamSize=sz;}});
+  });
+  // Bot difficulty selector
+  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(10,'bold');ctx.textAlign='left';ctx.fillText('BOT SKILL',lx,255);
+  ['recruit','regular','hardened','veteran'].forEach((d,i)=>{
+    mButton(lx+90+i*66,240,62,24,MP_DIFF[d].label,{id:'mp_df'+d,active:mpDifficulty===d,activeFill:C.ACCENT,activeBorder:C.ACCENT_SOFT,activeFg:'#fff',glow:mpDifficulty===d?C.ACCENT:C.BORDER_HI,fs:9,r:6,action:()=>{mpDifficulty=d;}});
   });
   const cards=[['tdm','TEAM DEATHMATCH'],['dom','DOMINATION'],['hp','HARDPOINT'],['ctf','CAPTURE THE FLAG'],['gungame','GUN GAME']];
-  const cw=Math.min(540,W-120),ch=56,cx=W/2-cw/2;let y=244;
+  const cw=Math.min(540,W-120),ch=52,cx=W/2-cw/2;let y=274;
   cards.forEach(([id,name])=>{
     const t=hoverAmt('mp_'+id,mHov(cx,y,cw,ch)),hov=t>0.5;
     panel(cx,y,cw,ch,{r:10,top:mix(C.PANEL_HI,'#2a2415',t),bottom:C.PANEL,border:mix(C.BORDER,C.GOLD,t),lw:1+t});
@@ -3374,6 +3382,27 @@ let mpZones=[], mpHill=null, mpHillPts=[], mpHillIdx=0, mpHillT=0, mpFlags=null;
 let blueSpawn=null, redSpawn=null, playerDownT=0;
 let mpMe={name:'YOU',team:'blue',kills:0,deaths:0,points:0}; // the player's own scoreboard line
 let mpCommitted=false; // guards against folding match stats into saveData twice
+// Bot difficulty tiers — react = spotting delay (s) before firing, spread = aim error (rad),
+// fireMul = fire-rate multiplier (lower=faster), nadeChance = chance to use a grenade on opportunity.
+let mpDifficulty='regular';
+const MP_DIFF={
+  recruit: {react:[0.55,0.95],spread:0.18, fireMul:1.45,nadeChance:0.04,label:'RECRUIT'},
+  regular: {react:[0.30,0.55],spread:0.11, fireMul:1.0, nadeChance:0.16,label:'REGULAR'},
+  hardened:{react:[0.18,0.32],spread:0.06, fireMul:0.85,nadeChance:0.30,label:'HARDENED'},
+  veteran: {react:[0.08,0.18],spread:0.035,fireMul:0.70,nadeChance:0.50,label:'VETERAN'},
+};
+const BOT_NAMES=['VIPER','GHOST','REAPER','HAWK','RAZOR','NOMAD','BLAZE','FROST','SABLE','TALON','ROOK','ECHO','WRAITH','COBRA','ONYX','JINX'];
+let killfeed=[]; // recent kills: {a,b,col,t}
+function pushKillfeed(a,b,team){killfeed.unshift({a:a||'',b:b||'',col:team==='blue'?MP_BLUE:team==='red'?MP_RED:'#999',t:performance.now()/1000});if(killfeed.length>6)killfeed.pop();}
+// A bot just got hurt — remember where the shot came from and snap to alertness.
+function botHurt(o,fx,fy){if(!o||o===player)return;o.hitT=0.9;o.hitFromX=fx;o.hitFromY=fy;o.react=Math.min(o.react||0,0.05);}
+// A bot lobs a frag toward a target (damages the opposing team + the player via explodeGrenade).
+function botThrowGrenade(b,tx,ty){
+  if((b.nades||0)<=0)return;b.nades--;b.nadeCd=rand(7,13);
+  const ang=Math.atan2(ty-b.y,tx-b.x),dist=Math.min(360,Math.hypot(tx-b.x,ty-b.y)),spd=Math.max(230,dist*1.7);
+  grenadeObjects.push({x:b.x,y:b.y,vx:Math.cos(ang)*spd,vy:Math.sin(ang)*spd,type:'frag',timer:1.4,exploded:false,team:b.team,owner:b});
+  sndGrenade();
+}
 
 function buildArena(themeIdx){
   mapCfg=MAPS[themeIdx];worldMap=blankMap();coverTiles=new Set();
@@ -3435,15 +3464,17 @@ function mpSpawnPos(team){
   }
   return best||{x:tcx(Math.floor(MAP_W/2)),y:tcx(Math.floor(MAP_H/2))};
 }
-function makeBot(team){const s=mpSpawnPos(team);return {x:s.x,y:s.y,hp:100,maxHp:100,angle:0,team,alive:true,respawnT:0,fireCd:rand(0,1),spd:rand(150,180),role:'',carryFlag:null,stuckT:0,detourT:0,ox:rand(-46,46),oy:rand(-46,46),name:'',kills:0,deaths:0,points:0,tier:0};}
+function makeBot(team){const s=mpSpawnPos(team);return {x:s.x,y:s.y,hp:100,maxHp:100,angle:0,team,alive:true,respawnT:0,fireCd:rand(0,1),spd:rand(150,180),role:'',carryFlag:null,stuckT:0,detourT:0,ox:rand(-46,46),oy:rand(-46,46),name:'',kills:0,deaths:0,points:0,tier:0,
+  seen:null,react:0,hitT:0,hitFromX:0,hitFromY:0,nades:2,nadeCd:rand(4,10)};}
 function spawnBots(){
   bots=[];
+  const pool=BOT_NAMES.slice().sort(()=>Math.random()-0.5); // shuffled callsigns
   // Human counts as one blue, so blue gets teamSize-1 bots; red gets a full teamSize.
-  for(let i=0;i<mpTeamSize-1;i++){const b=makeBot('blue');b.name='T'+(i+1);bots.push(b);}
-  for(let i=0;i<mpTeamSize;i++){const b=makeBot('red'); b.name='E'+(i+1);bots.push(b);}
+  for(let i=0;i<mpTeamSize-1;i++){const b=makeBot('blue');b.name=pool.pop()||('T'+(i+1));bots.push(b);}
+  for(let i=0;i<mpTeamSize;i++){const b=makeBot('red'); b.name=pool.pop()||('E'+(i+1));bots.push(b);}
   if(mpMode==='ctf')bots.forEach((b,i)=>b.role=(i%2===0)?'attack':'defend');
 }
-function respawnBot(b){const s=mpSpawnPos(b.team);b.alive=true;b.hp=b.maxHp;b.x=s.x;b.y=s.y;b.respawnT=0;b.carryFlag=null;}
+function respawnBot(b){const s=mpSpawnPos(b.team);b.alive=true;b.hp=b.maxHp;b.x=s.x;b.y=s.y;b.respawnT=0;b.carryFlag=null;b.seen=null;b.react=0;b.hitT=0;b.nades=2;b.nadeCd=rand(4,9);}
 
 function mpPlayerDown(){if(playerDownT>0)return;playerDownT=MP_RESPAWN;mpMe.deaths++;if(mpMode==='tdm')mpScore.red++;mpFlagDropFrom(player);addShake(12,0.4);addNotif('You were killed — respawning…','#ff8585',3);}
 function mpRespawnPlayer(){const s=mpSpawnPos('blue');player.hp=player.maxHp;player.x=s.x;player.y=s.y;player.invincible=2;player.lastStand=false;player.dmgT=99;player.mag=player.magMax;player.reloadT=0;playerDownT=0;if(mpMode==='gungame')gunGameEquip(mpMe.tier||0);}
@@ -3502,9 +3533,12 @@ function mpSteer(b,gx,gy,spd,dt){
   return Math.atan2(diry,dirx);
 }
 function updateBots(dt){
+  const D=MP_DIFF[mpDifficulty]||MP_DIFF.regular;
   for(const b of bots){
     if(!b.alive){b.respawnT-=dt;if(b.respawnT<=0)respawnBot(b);continue;}
     b.dmgT=(b.dmgT||0)+dt;if(b.dmgT>7&&b.hp<b.maxHp)b.hp=Math.min(b.maxHp,b.hp+25*dt); // out-of-combat health regen
+    if(b.hitT>0)b.hitT-=dt;
+    if(b.nadeCd>0)b.nadeCd-=dt;
     if(b.stun>0){b.stun-=dt;continue;}                                                  // flashbanged: frozen
     const e=mpNearestEnemy(b);
     let goal=mpBotGoal(b);
@@ -3513,21 +3547,31 @@ function updateBots(dt){
       if(b.wx===undefined||b.wt<=0||Math.hypot(b.wx-b.x,b.wy-b.y)<44){const rp=mpRoamPoint(b,b.roamC);b.wx=rp.x;b.wy=rp.y;b.wt=rand(2.5,5);}
       goal={x:b.wx,y:b.wy};
     } else {goal={x:goal.x+(b.ox||0),y:goal.y+(b.oy||0)};} // personal offset so they spread around the point
-    if(e.tgt&&e.d<520&&losClear(b.x,b.y,e.tgt.x,e.tgt.y)){
-      // pick a fighting position: advance if far, back off if too close, otherwise strafe
+    const canSee=e.tgt&&e.d<540&&losClear(b.x,b.y,e.tgt.x,e.tgt.y);
+    if(canSee){
+      // Spotting delay: a fresh sighting takes a reaction beat before the bot can fire.
+      if(b.seen!==e.tgt){b.seen=e.tgt;b.react=rand(D.react[0],D.react[1]);}
+      if(b.react>0)b.react-=dt;
+      const hurt=b.hp<b.maxHp*0.35; // wounded → kite away to regen
       let tx,ty;
-      if(e.d>240){tx=e.tgt.x;ty=e.tgt.y;}
-      else if(e.d<140){tx=b.x*2-e.tgt.x;ty=b.y*2-e.tgt.y;}
+      if(hurt){tx=b.x*2-e.tgt.x;ty=b.y*2-e.tgt.y;}            // retreat from the threat
+      else if(e.d>240){tx=e.tgt.x;ty=e.tgt.y;}               // advance
+      else if(e.d<130){tx=b.x*2-e.tgt.x;ty=b.y*2-e.tgt.y;}   // too close, back off
       else {if(b.strafeFlip===undefined||Math.random()<0.01)b.strafeFlip=Math.random()<0.5?1:-1;const pa=Math.atan2(e.tgt.y-b.y,e.tgt.x-b.x)+Math.PI/2*b.strafeFlip;tx=b.x+Math.cos(pa)*70;ty=b.y+Math.sin(pa)*70;}
       mpSteer(b,tx,ty,b.spd,dt);
-      b.angle=Math.atan2(e.tgt.y-b.y,e.tgt.x-b.x); // always face the enemy while fighting
+      b.angle=Math.atan2(e.tgt.y-b.y,e.tgt.x-b.x); // face the enemy while fighting
+      // Grenade: lob a frag at a non-close target when it's a clear opportunity.
+      if(b.nadeCd<=0&&b.nades>0&&e.d>150&&e.d<360&&!hurt&&Math.random()<D.nadeChance*dt*8)botThrowGrenade(b,e.tgt.x,e.tgt.y);
       b.fireCd-=dt;
-      if(b.fireCd<=0&&e.d>40){const a=b.angle+rand(-0.08,0.08);
+      if(b.react<=0&&b.fireCd<=0&&e.d>40&&!hurt){const a=b.angle+rand(-D.spread,D.spread);
         // Gun Game: bot's bullet reflects its weapon-tier (single bullet, dmg clamped for balance).
-        let bdmg=9,bspd=430,bcd=rand(0.6,1.2);
-        if(mpMode==='gungame'){const gw=WEAPONS[GUNGAME_WEAPONS[Math.min(b.tier||0,GUNGAME_WEAPONS.length-1)]];bdmg=clamp(Math.round((gw.dmg||9)*(gw.pellets>1?0.6:1)),6,40);bspd=gw.spd||430;bcd=clamp((gw.cd||0.5)*1.6,0.18,1.4);}
+        let bdmg=9,bspd=430,bcd=rand(0.6,1.2)*D.fireMul;
+        if(mpMode==='gungame'){const gw=WEAPONS[GUNGAME_WEAPONS[Math.min(b.tier||0,GUNGAME_WEAPONS.length-1)]];bdmg=clamp(Math.round((gw.dmg||9)*(gw.pellets>1?0.6:1)),6,40);bspd=gw.spd||430;bcd=clamp((gw.cd||0.5)*1.6,0.18,1.4)*D.fireMul;}
         bullets.push({x:b.x,y:b.y,vx:Math.cos(a)*bspd,vy:Math.sin(a)*bspd,dmg:bdmg,life:1.6,color:b.team==='blue'?'#aee0ff':'#ffb0b0',fromPlayer:false,team:b.team,owner:b,br:4});spawnMuzzle(b.x+Math.cos(a)*16,b.y+Math.sin(a)*16,a);b.fireCd=bcd;}
     } else {
+      b.seen=null;
+      // No target visible: if recently shot, wheel around and investigate the source of fire.
+      if(b.hitT>0){goal={x:b.hitFromX,y:b.hitFromY};}
       b.angle=mpSteer(b,goal.x,goal.y,b.spd,dt);
     }
   }
@@ -3539,8 +3583,9 @@ function updateMpBullets(dt){
     const bteam=bteamOf(b);
     for(const o of bots){if(!o.alive||o.team===bteam)continue;if(Math.hypot(b.x-o.x,b.y-o.y)<15+(b.br||4)){
       if(b.explosive){if(bteam==='blue')mpExplode(b.x,b.y,b.blast,b.dmg);return false;}
-      if(b.pierce){if(!b.hit)b.hit=new Set();if(b.hit.has(o))continue;b.hit.add(o);o.hp-=b.dmg;o.dmgT=0;spawnBlood(o.x,o.y,6);if(b.owner==='me'){popDmg(o.x,o.y,b.dmg);hitMark(o.hp<=0);}if(o.hp<=0)mpKill(b.owner||(b.fromPlayer?'me':null),o);continue;}
-      o.hp-=b.dmg;o.dmgT=0;spawnBlood(o.x,o.y,6);if(b.owner==='me'){popDmg(o.x,o.y,b.dmg);hitMark(o.hp<=0);}if(o.hp<=0)mpKill(b.owner||(b.fromPlayer?'me':null),o);return false;}}
+      const fx=b.owner==='me'?player.x:(b.owner&&b.owner.x!=null?b.owner.x:b.x),fy=b.owner==='me'?player.y:(b.owner&&b.owner.y!=null?b.owner.y:b.y);
+      if(b.pierce){if(!b.hit)b.hit=new Set();if(b.hit.has(o))continue;b.hit.add(o);o.hp-=b.dmg;o.dmgT=0;spawnBlood(o.x,o.y,6);botHurt(o,fx,fy);if(b.owner==='me'){popDmg(o.x,o.y,b.dmg);hitMark(o.hp<=0);}if(o.hp<=0)mpKill(b.owner||(b.fromPlayer?'me':null),o);continue;}
+      o.hp-=b.dmg;o.dmgT=0;spawnBlood(o.x,o.y,6);botHurt(o,fx,fy);if(b.owner==='me'){popDmg(o.x,o.y,b.dmg);hitMark(o.hp<=0);}if(o.hp<=0)mpKill(b.owner||(b.fromPlayer?'me':null),o);return false;}}
     if(bteam==='red'&&playerDownT<=0&&Math.hypot(b.x-player.x,b.y-player.y)<player.radius+(b.br||4)){if(player.invincible<=0){if(player.hp-b.dmg<=0&&b.owner&&b.owner.team){b.owner.kills=(b.owner.kills||0)+1;b.owner.points=(b.owner.points||0)+100;}takeDamage(b.dmg);player.invincible=0.25;addShake(5,0.15);}spawnBlood(b.x,b.y,4);return false;}
     return true;
   });
@@ -3557,6 +3602,7 @@ function mpKill(killer,victim){
   let kt=null;
   if(killer==='me'){kt='blue';mpMe.kills++;mpMe.points+=100;sessionCoins+=2;sndKill();}
   else if(killer&&killer.team){kt=killer.team;killer.kills=(killer.kills||0)+1;killer.points=(killer.points||0)+100;}
+  pushKillfeed(killer==='me'?mpMe.name:(killer&&killer.name)||'',victim.name,kt); // killfeed entry
   if(mpMode==='gungame'){
     // Individual ladder: advance the killer's tier; team score tracks its best tier (drives the win check).
     if(killer==='me'){mpMe.tier=(mpMe.tier||0)+1;gunGameEquip(mpMe.tier);mpScore.blue=Math.max(mpScore.blue,mpMe.tier);
@@ -3633,6 +3679,7 @@ function drawBot(b,camX,camY){
   if(b.hp<b.maxHp){ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(sx-14,sy-25,28,4);ctx.fillStyle=b.team==='blue'?MP_BLUE:MP_RED;ctx.fillRect(sx-14,sy-25,28*clamp(b.hp/b.maxHp,0,1),4);}
   if(b.team==='blue'){ctx.fillStyle='rgba(120,220,160,0.9)';ctx.font='bold 9px Courier New';ctx.textAlign='center';ctx.fillText('▲',sx,sy-29);}
   if(b.carryFlag){ctx.fillStyle=b.carryFlag==='blue'?MP_BLUE:MP_RED;ctx.fillRect(sx-1,sy-38,3,12);ctx.fillRect(sx+2,sy-38,8,5);}
+  if(b.hitT>0.5){ctx.globalAlpha=(b.hitT-0.5)*2;ctx.strokeStyle='#ffdd44';ctx.lineWidth=2;ctx.beginPath();ctx.arc(sx,sy,19,0,Math.PI*2);ctx.stroke();ctx.fillStyle='#ffdd44';ctx.font='bold 11px Courier New';ctx.fillText('!',sx,sy-40);ctx.globalAlpha=1;} // alerted/just hit
 }
 function drawMpZones(camX,camY){
   const t=performance.now()/1000,p=Math.sin(t*3)*0.3+0.7;
@@ -3650,9 +3697,21 @@ function drawMpZones(camX,camY){
     if(!f.carrier){const sx=f.pos.x-camX,sy=f.pos.y-camY;ctx.fillStyle=col;ctx.fillRect(sx-2,sy-18,4,24);ctx.beginPath();ctx.moveTo(sx+2,sy-18);ctx.lineTo(sx+20,sy-12);ctx.lineTo(sx+2,sy-6);ctx.closePath();ctx.fill();
       ctx.fillStyle=col;ctx.font='bold 10px Courier New';ctx.textAlign='center';ctx.fillText(tm.toUpperCase()+' FLAG',sx,sy-22);}}}
 }
+function drawKillfeed(){
+  const now=performance.now()/1000;let y=64;ctx.textAlign='right';
+  for(const k of killfeed){const age=now-k.t;if(age>5)continue;ctx.globalAlpha=Math.min(1,(5-age)*1.2);
+    ctx.font='bold 11px Courier New';
+    const bw=ctx.measureText(' ➤ ').width,aw=ctx.measureText(k.a).width,vw=ctx.measureText(k.b).width,x=W-14;
+    ctx.fillStyle='#ddd';ctx.fillText(k.b,x,y);
+    ctx.fillStyle='#888';ctx.fillText(' ➤ ',x-vw,y);
+    ctx.fillStyle=k.col;ctx.fillText(k.a,x-vw-bw,y);
+    y+=16;}
+  ctx.globalAlpha=1;
+}
 function drawMpHUD(){
   const bw=340,bx=W/2-bw/2;
   ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(bx,12,bw,42);ctx.strokeStyle='#333';ctx.lineWidth=1;ctx.strokeRect(bx,12,bw,42);
+  drawKillfeed();
   ctx.textAlign='left';ctx.fillStyle=MP_BLUE;ctx.font='bold 24px Courier New';ctx.fillText(mpScore.blue,bx+16,42);
   ctx.textAlign='right';ctx.fillStyle=MP_RED;ctx.fillText(mpScore.red,bx+bw-16,42);
   ctx.textAlign='center';ctx.fillStyle='#eee';ctx.font='bold 11px Courier New';ctx.fillText(MP_MODES[mpMode].name,W/2,28);
