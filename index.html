@@ -823,7 +823,7 @@ const WEAPONS={
   sniper:    {dmg:130,cd:1.2, spd:1400,spread:0.005, pellets:1,color:'#ff44ff',unlock:4},
   crossbow:  {dmg:240,cd:1.0, spd:720, spread:0.008, pellets:1,color:'#caa15a',pierce:true,silent:true,br:5,unlock:10},
   machinegun:{dmg:22, cd:0.06,spd:780, spread:0.055, pellets:1,color:'#ffcc44',unlock:8},
-  flamethrower:{dmg:70,cd:0.05,spd:0,  spread:0,     pellets:0,color:'#ff7700',flame:true,range:54,unlock:18},
+  flamethrower:{dmg:95,cd:0.05,spd:0,  spread:0,     pellets:0,color:'#ff7700',flame:true,range:240,unlock:18},
   tesla:     {dmg:60, cd:0.5, spd:0,   spread:0,     pellets:0,color:'#66ddff',chain:true,range:360,chainRange:150,maxChain:4,unlock:22},
   rocket:    {dmg:160,cd:1.1, spd:560, spread:0.02,  pellets:1,color:'#ff6a00',explosive:true,blast:130,br:7,unlock:6},
 };
@@ -859,8 +859,16 @@ function mpExplode(x,y,radius,dmg){
 }
 // Flamethrower: drop a brief fire patch just ahead of the player (firePatches update applies the DoT).
 function fireFlame(w){
-  const px=player.x+Math.cos(player.angle)*50,py=player.y+Math.sin(player.angle)*50;
-  firePatches.push({x:px,y:py,radius:46,timer:0.45,dps:w.dmg});
+  const reach=w.range||220,halfArc=0.32,perShot=w.dmg*(w.cd||0.05);
+  // Visual stream: a row of flames out to the weapon's reach, stopped by walls (dps:0 = cosmetic only).
+  const step=30,n=Math.ceil(reach/step);
+  for(let i=1;i<=n;i++){const a=player.angle+rand(-0.14,0.14),px=player.x+Math.cos(a)*i*step,py=player.y+Math.sin(a)*i*step;if(isWall(px,py))break;firePatches.push({x:px,y:py,radius:18+i*3.2,timer:0.2,dps:0});}
+  // Damage: anyone inside the forward cone within reach gets burned (consistent dps regardless of overlap).
+  for(const o of hostiles()){
+    const dx=o.x-player.x,dy=o.y-player.y,dist=Math.hypot(dx,dy);
+    if(dist>reach+(o.r||15))continue;
+    if(Math.abs(angDiff(Math.atan2(dy,dx),player.angle))<halfArc+(o.r||15)/Math.max(dist,30))damageHostile(o,perShot);
+  }
 }
 // Tesla: zap the nearest hostile, then chain to nearby ones, damage decaying per jump.
 function fireTesla(w){
@@ -952,7 +960,7 @@ function throwGrenade(){
 }
 function updateGrenades(dt){
   grenadeObjects=grenadeObjects.filter(g=>{g.x+=g.vx*dt;g.y+=g.vy*dt;g.vx*=0.9;g.vy*=0.9;if(isWall(g.x,g.y)){g.vx*=-0.5;g.vy*=-0.5;}g.timer-=dt;if(g.timer<=0&&!g.exploded){g.exploded=true;explodeGrenade(g);return false;}return !g.exploded;});
-  firePatches=firePatches.filter(f=>{f.timer-=dt;const dps=f.dps||45,mp=gameMode==='mp',tgts=mp?bots:enemies;tgts.forEach(e=>{if(!e.alive||(mp&&e.team!=='red'))return;if(Math.hypot(e.x-f.x,e.y-f.y)<f.radius+(e.r||15)){e.hp-=dps*dt;if(mp){e.dmgT=0;if(e.hp<=0)mpKill('me',e);}else if(e.hp<=0)killEnemy(e);}});return f.timer>0;});
+  firePatches=firePatches.filter(f=>{f.timer-=dt;const dps=f.dps==null?45:f.dps;if(dps>0){const mp=gameMode==='mp',tgts=mp?bots:enemies;tgts.forEach(e=>{if(!e.alive||(mp&&e.team!=='red'))return;if(Math.hypot(e.x-f.x,e.y-f.y)<f.radius+(e.r||15)){e.hp-=dps*dt;if(mp){e.dmgT=0;if(e.hp<=0)mpKill('me',e);}else if(e.hp<=0)killEnemy(e);}});}return f.timer>0;});
 }
 function explodeAt(x,y,radius,dmg,shake){
   spawnExplosion(x,y,Math.max(12,Math.round(radius/5)));addShake(shake||10,0.35);
