@@ -178,8 +178,30 @@ const RANKS=[
 function rankFor(kills){let r=RANKS[0];for(const x of RANKS)if(kills>=x.kills)r=x;return r;}
 function nextRank(kills){for(const x of RANKS)if(kills<x.kills)return x;return null;}
 
+// ── Account level / XP (drives weapon unlocks; earned in every mode) ──────────
+const MAX_LEVEL=30;
+function xpForLevel(l){l=Math.max(1,l);return Math.round(150*(l-1)+25*(l-1)*(l-2));} // cumulative XP to reach level l
+function levelFromXp(xp){let l=1;while(l<MAX_LEVEL&&xp>=xpForLevel(l+1))l++;return l;}
+function xpProgress(xp){const l=levelFromXp(xp);if(l>=MAX_LEVEL)return{level:l,into:1,need:1,frac:1,max:true};
+  const base=xpForLevel(l),next=xpForLevel(l+1);return{level:l,into:xp-base,need:next-base,frac:(xp-base)/(next-base),max:false};}
+// Add XP and announce any level-ups / weapon unlocks. Caller is responsible for writeSave().
+function addXp(n){
+  if(!n||n<0)return;
+  const before=levelFromXp(saveData.xp);
+  saveData.xp+=Math.round(n);
+  const after=levelFromXp(saveData.xp);
+  if(after>before){
+    addNotif(`⭐ LEVEL ${after}!`,'#ffd24a',4);
+    for(let lv=before+1;lv<=after;lv++){
+      for(const wid of ALL_WEAPONS)if((WEAPONS[wid].unlock||1)===lv)addNotif(`🔓 UNLOCKED: ${wid.toUpperCase()}`,WEAPONS[wid].color||'#fff',4.5);
+    }
+  }
+}
+
 const SAVE_DEFAULT={
   coins:0, kills:0, deaths:0, highestLevel:1, gamesPlayed:0, bestScore:0,
+  xp:0,             // account XP (earned in every mode) — drives the level/unlock system
+  loadout:{primary:'rifle',secondary:'pistol',lethal:'frag',tactical:'flashbang'}, // MP loadout
   ownedHats:['none'], ownedOutfits:['default'], equippedHat:'none', equippedOutfit:'default',
   campaignDone:[],  // ids of completed stealth missions
   username:'',      // chosen public name for the leaderboard
@@ -199,6 +221,11 @@ function loadSave(){
   if(typeof s.username!=='string')s.username='';
   const mp=s.mp||{},mb=mp.best||{};
   s.mp={kills:mp.kills||0,deaths:mp.deaths||0,points:mp.points||0,matches:mp.matches||0,wins:mp.wins||0,best:{kills:mb.kills||0,deaths:mb.deaths||0,points:mb.points||0}};
+  // XP / level: seed veterans from existing stats the first time (so unlocks aren't all relocked)
+  if(typeof s.xp!=='number')s.xp=(s.kills||0)*5+(s.mp.kills||0)*10+((s.highestLevel||1)-1)*20+Math.floor((s.bestScore||0)/200);
+  // Loadout: keep a fully-shaped object, defaulting any missing/invalid slot
+  const lo=s.loadout||{},def=SAVE_DEFAULT.loadout;
+  s.loadout={primary:lo.primary||def.primary,secondary:lo.secondary||def.secondary,lethal:lo.lethal||def.lethal,tactical:lo.tactical||def.tactical};
   return s;
 }
 function writeSave(){try{localStorage.setItem('dz_save',JSON.stringify(saveData));}catch(e){}}
@@ -292,7 +319,7 @@ const UPGRADE_DEFS=[
   {id:'range',     label:'Range',     icon:'🎯',desc:'+40% bullet range/tier', color:'#44aaff',maxLv:3,costs:[400,900,1600]},
   {id:'ammoBoost', label:'Ammo Cap',  icon:'📦',desc:'+50% ammo per purchase', color:'#44ff88',maxLv:3,costs:[300,700,1300]},
 ];
-const UPGR_MULT={pistol:0.5,shotgun:1.0,rifle:1.4,sniper:1.8,machinegun:1.6};
+const UPGR_MULT={pistol:0.5,smg:1.0,shotgun:1.0,aa12:1.3,rifle:1.4,sniper:1.8,crossbow:1.6,machinegun:1.6,flamethrower:1.5,tesla:1.8,rocket:1.6};
 
 function getWeaponStats(wid){
   const base=WEAPONS[wid],u=weaponUpgrades[wid]||{};
@@ -513,7 +540,18 @@ let particles=[];
 function spawnBlood(x,y,n=8,col){for(let i=0;i<n;i++){const a=rand(0,Math.PI*2),s=rand(1.5,6);particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:rand(0.4,0.9),maxLife:rand(0.4,0.9),r:rand(2,5),color:col||`hsl(${randInt(0,18)},90%,${randInt(28,48)}%)`});}}
 function spawnMuzzle(x,y,angle){for(let i=0;i<6;i++){const a=angle+rand(-0.25,0.25),s=rand(4,10);particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:0.12,maxLife:0.12,r:rand(2,4.5),color:`hsl(${randInt(30,55)},100%,70%)`});}}
 function spawnExplosion(x,y,n=20){for(let i=0;i<n;i++){const a=rand(0,Math.PI*2),s=rand(3,12);particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:rand(0.5,1.2),maxLife:1.2,r:rand(3,8),color:`hsl(${randInt(10,45)},100%,${randInt(50,75)}%)`});}}
-function updateParticles(dt){particles=particles.filter(p=>{p.x+=p.vx;p.y+=p.vy;p.vx*=0.9;p.vy*=0.9;p.life-=dt;return p.life>0;});}
+function updateParticles(dt){particles=particles.filter(p=>{p.x+=p.vx;p.y+=p.vy;p.vx*=0.9;p.vy*=0.9;p.life-=dt;return p.life>0;});arcs=arcs.filter(a=>{a.life-=dt;return a.life>0;});}
+// Tesla lightning: jagged segments between each chained target, drawn for a few frames.
+function drawArcs(camX,camY){
+  for(const a of arcs){
+    const x1=a.x1-camX,y1=a.y1-camY,x2=a.x2-camX,y2=a.y2-camY;
+    const segs=6,dx=(x2-x1)/segs,dy=(y2-y1)/segs;
+    ctx.strokeStyle=`rgba(150,230,255,${Math.min(1,a.life*8)})`;ctx.shadowColor='#66ddff';ctx.shadowBlur=10;ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(x1,y1);
+    for(let i=1;i<segs;i++)ctx.lineTo(x1+dx*i+rand(-7,7),y1+dy*i+rand(-7,7));
+    ctx.lineTo(x2,y2);ctx.stroke();ctx.shadowBlur=0;
+  }
+}
 function drawParticles(cx,cy){particles.forEach(p=>{ctx.globalAlpha=p.life/p.maxLife;ctx.fillStyle=p.color;ctx.beginPath();ctx.arc(p.x-cx,p.y-cy,p.r*(p.life/p.maxLife),0,Math.PI*2);ctx.fill();});ctx.globalAlpha=1;}
 
 // ── Screen shake ───────────────────────────────────────────────────────────
@@ -652,9 +690,14 @@ function findSafeSpawn(){
 const SHOP_ITEMS_BY_TAB={
   weapons:[
     {id:'pistolAmmo',name:'Pistol Ammo', cost:0,   type:'ammo',  desc:'Pistol has infinite ammo'},
+    {id:'smg',       name:'SMG',         cost:600, type:'weapon',desc:'Very fast, run-and-gun'},
     {id:'shotgun',   name:'Shotgun',     cost:500, type:'weapon',desc:'Wide spread, close range'},
+    {id:'aa12',      name:'Auto Shotgun',cost:1500,type:'weapon',desc:'Rapid-fire buckshot'},
     {id:'rifle',     name:'Assault Rifle',cost:750,type:'weapon',desc:'Fast, accurate'},
     {id:'sniper',    name:'Sniper Rifle',cost:1200,type:'weapon',desc:'High damage, slow fire'},
+    {id:'crossbow',  name:'Crossbow',    cost:1000,type:'weapon',desc:'Silent, pierces through enemies'},
+    {id:'flamethrower',name:'Flamethrower',cost:1800,type:'weapon',desc:'Sprays a stream of fire'},
+    {id:'tesla',     name:'Tesla Gun',   cost:2200,type:'weapon',desc:'Lightning arcs between enemies'},
     {id:'rocket',    name:'Rocket Launcher',cost:2500,type:'weapon',desc:'Explosive AoE rounds'},
   ],
   grenades:[
@@ -677,21 +720,28 @@ const SHOP_ITEMS_BY_TAB={
     {id:'heavyArmour',name:'Heavy Armour',cost:800,type:'armour',desc:'+100 armour HP, absorbs 70% of damage'},
   ],
   ammo:[
+    {id:'ammoSmg',    name:'SMG Ammo',   cost:140, type:'ammo',  desc:'+90 SMG rounds (more with Ammo Cap upgrade)'},
     {id:'ammoShotgun',name:'SG Ammo',   cost:150, type:'ammo',  desc:'+24 shotgun shells (more with Ammo Cap upgrade)'},
+    {id:'ammoAa12',   name:'Auto-SG Ammo',cost:220,type:'ammo', desc:'+32 auto-shotgun shells (more with Ammo Cap upgrade)'},
     {id:'ammoRifle',  name:'AR Ammo',   cost:200, type:'ammo',  desc:'+40 rifle rounds (more with Ammo Cap upgrade)'},
     {id:'ammoSniper', name:'Sniper Ammo',cost:250,type:'ammo',  desc:'+15 sniper rounds (more with Ammo Cap upgrade)'},
+    {id:'ammoCrossbow',name:'Bolt Pack', cost:200,type:'ammo',  desc:'+12 crossbow bolts (more with Ammo Cap upgrade)'},
+    {id:'ammoFlamethrower',name:'Fuel',  cost:260,type:'ammo',  desc:'+200 flamethrower fuel (more with Ammo Cap upgrade)'},
+    {id:'ammoTesla',  name:'Cells',      cost:300,type:'ammo',  desc:'+30 tesla cells (more with Ammo Cap upgrade)'},
     {id:'ammoRocket', name:'Rocket Ammo',cost:400,type:'ammo',  desc:'+5 rockets (more with Ammo Cap upgrade)'},
   ],
 };
 function getTabItems(){return SHOP_ITEMS_BY_TAB[activeTab]||[];}
 
+const WEAPON_BUY_AMMO={smg:90,shotgun:24,aa12:32,rifle:40,sniper:15,crossbow:12,flamethrower:200,tesla:30,rocket:5};
 function buyItem(item){
   if(item.id==='pistolAmmo')return;
+  if(item.type==='weapon'&&!weaponUnlocked(item.id)){addNotif(`🔒 ${item.name} unlocks at Level ${WEAPONS[item.id].unlock}`,'#ff8800',3);return;}
   if(currency<item.cost){addNotif(`Need £${item.cost-currency} more`,'#ff8800',2);return;}
   currency-=item.cost;
   if(item.type==='weapon'){
     if(!player.weapons.includes(item.id))player.weapons.push(item.id);
-    const base={shotgun:24,rifle:40,sniper:15,rocket:5}[item.id]||0;
+    const base=WEAPON_BUY_AMMO[item.id]||0;
     addAmmo(item.id,getAmmoBonus(item.id,base));
     player.weapon=item.id;
     addNotif(`Bought ${item.name}!`,'#2ecc71',2);
@@ -713,7 +763,7 @@ function buyItem(item){
     player.maxArmourHp=Math.max(player.maxArmourHp,player.armourHp);
     addNotif(`Armour equipped!`,'#4488ff',2);
   } else if(item.type==='ammo'){
-    const map={ammoShotgun:['shotgun',24],ammoRifle:['rifle',40],ammoSniper:['sniper',15],ammoRocket:['rocket',5]};
+    const map={ammoSmg:['smg',90],ammoShotgun:['shotgun',24],ammoAa12:['aa12',32],ammoRifle:['rifle',40],ammoSniper:['sniper',15],ammoCrossbow:['crossbow',12],ammoFlamethrower:['flamethrower',200],ammoTesla:['tesla',30],ammoRocket:['rocket',5]};
     const[w,n]=map[item.id]||[];
     if(w){
       if((player.ammo[w]||0)>=AMMO_CAP){currency+=item.cost;addNotif(`${w} ammo full (cap ${AMMO_CAP})`,'#ff8800',2);return;}
@@ -762,16 +812,68 @@ function initPlayer(){
     battery:40,batteryMax:40};
 }
 const WEAPONS={
-  knife:     {dmg:300,cd:0.42,melee:true,range:54,arc:0.85,color:'#d6d6e0'},
-  pistol:    {dmg:25, cd:0.38,spd:620, spread:0.05,  pellets:1,color:'#ffe566'},
-  shotgun:   {dmg:18, cd:0.75,spd:480, spread:0.28,  pellets:6,color:'#ff8800'},
-  rifle:     {dmg:42, cd:0.18,spd:950, spread:0.018, pellets:1,color:'#44ccff'},
-  sniper:    {dmg:130,cd:1.2, spd:1400,spread:0.005, pellets:1,color:'#ff44ff'},
-  machinegun:{dmg:22, cd:0.06,spd:780, spread:0.055, pellets:1,color:'#ffcc44'},
-  rocket:    {dmg:160,cd:1.1, spd:560, spread:0.02,  pellets:1,color:'#ff6a00',explosive:true,blast:130,br:7},
+  knife:     {dmg:300,cd:0.42,melee:true,range:54,arc:0.85,color:'#d6d6e0',unlock:1},
+  pistol:    {dmg:25, cd:0.38,spd:620, spread:0.05,  pellets:1,color:'#ffe566',unlock:1},
+  smg:       {dmg:18, cd:0.07,spd:840, spread:0.05,  pellets:1,color:'#7CFC00',unlock:3},
+  shotgun:   {dmg:18, cd:0.75,spd:480, spread:0.28,  pellets:6,color:'#ff8800',unlock:2},
+  aa12:      {dmg:13, cd:0.26,spd:540, spread:0.22,  pellets:5,color:'#ff5522',unlock:12},
+  rifle:     {dmg:42, cd:0.18,spd:950, spread:0.018, pellets:1,color:'#44ccff',unlock:1},
+  sniper:    {dmg:130,cd:1.2, spd:1400,spread:0.005, pellets:1,color:'#ff44ff',unlock:4},
+  crossbow:  {dmg:240,cd:1.0, spd:720, spread:0.008, pellets:1,color:'#caa15a',pierce:true,silent:true,br:5,unlock:10},
+  machinegun:{dmg:22, cd:0.06,spd:780, spread:0.055, pellets:1,color:'#ffcc44',unlock:8},
+  flamethrower:{dmg:70,cd:0.05,spd:0,  spread:0,     pellets:0,color:'#ff7700',flame:true,range:54,unlock:18},
+  tesla:     {dmg:60, cd:0.5, spd:0,   spread:0,     pellets:0,color:'#66ddff',chain:true,range:360,chainRange:150,maxChain:4,unlock:22},
+  rocket:    {dmg:160,cd:1.1, spd:560, spread:0.02,  pellets:1,color:'#ff6a00',explosive:true,blast:130,br:7,unlock:6},
 };
-const ALL_WEAPONS=['knife','pistol','shotgun','rifle','sniper','machinegun','rocket'];
-let bullets=[],lastShot=0;
+const ALL_WEAPONS=['knife','pistol','smg','shotgun','aa12','rifle','sniper','crossbow','machinegun','flamethrower','tesla','rocket'];
+// A weapon counts as unlocked once the account level reaches its unlock requirement.
+function weaponUnlocked(wid){return levelFromXp(saveData.xp)>=(WEAPONS[wid].unlock||1);}
+// MP magazine size per primary (pistol is infinite, knife is melee).
+const MAG_SIZE={rifle:30,smg:40,aa12:8,shotgun:8,sniper:5,crossbow:1,machinegun:60,flamethrower:200,tesla:12,rocket:4};
+// Resolve the saved MP loadout, falling back if a slot is empty/invalid or no longer unlocked.
+function resolveLoadout(){
+  const lo=Object.assign({},SAVE_DEFAULT.loadout,saveData.loadout||{});
+  if(!WEAPONS[lo.primary]||WEAPONS[lo.primary].melee||lo.primary==='pistol'||!weaponUnlocked(lo.primary))lo.primary='rifle';
+  lo.secondary='pistol';
+  if(lo.lethal!=='frag'&&lo.lethal!=='molotov')lo.lethal='frag';
+  lo.tactical='flashbang';
+  return lo;
+}
+let bullets=[],lastShot=0,arcs=[]; // arcs = transient tesla lightning segments
+// A weapon that draws from a reloadable magazine in MP (everything except pistol/melee).
+function usesMag(wid){return wid!=='pistol'&&!WEAPONS[wid].melee;}
+// Valid targets for area/chain weapons, unified across modes (zombies vs MP red bots).
+function hostiles(){return gameMode==='mp'?bots.filter(o=>o.alive&&o.team==='red'):enemies.filter(o=>o.alive);}
+function damageHostile(o,dmg){
+  o.hp-=dmg;spawnBlood(o.x,o.y,4);
+  if(gameMode==='mp'){o.dmgT=0;if(o.hp<=0)mpKill('me',o);}
+  else if(o.hp<=0)killEnemy(o);
+}
+function bteamOf(b){return b.team||(b.fromPlayer?'blue':'red');}
+// MP explosive splash (rocket etc.) — mirrors explodeGrenade's RED-bot loop.
+function mpExplode(x,y,radius,dmg){
+  spawnExplosion(x,y,Math.max(12,Math.round(radius/5)));addShake(10,0.35);
+  for(const o of bots){if(!o.alive||o.team!=='red')continue;const d=Math.hypot(o.x-x,o.y-y);if(d<radius){o.hp-=dmg*(1-d/radius);o.dmgT=0;if(o.hp<=0)mpKill('me',o);}}
+}
+// Flamethrower: drop a brief fire patch just ahead of the player (firePatches update applies the DoT).
+function fireFlame(w){
+  const px=player.x+Math.cos(player.angle)*50,py=player.y+Math.sin(player.angle)*50;
+  firePatches.push({x:px,y:py,radius:46,timer:0.45,dps:w.dmg});
+}
+// Tesla: zap the nearest hostile, then chain to nearby ones, damage decaying per jump.
+function fireTesla(w){
+  const list=hostiles();if(!list.length)return;
+  const hit=new Set();let fx=player.x,fy=player.y,dmg=w.dmg;
+  for(let jump=0;jump<(w.maxChain||4);jump++){
+    let best=null,bestD=jump===0?(w.range||360):(w.chainRange||150);
+    for(const o of list){if(hit.has(o))continue;const d=Math.hypot(o.x-fx,o.y-fy);if(d<bestD){bestD=d;best=o;}}
+    if(!best)break;
+    hit.add(best);arcs.push({x1:fx,y1:fy,x2:best.x,y2:best.y,life:0.12});
+    damageHostile(best,dmg);
+    fx=best.x;fy=best.y;dmg*=0.8;
+  }
+  addShake(3,0.08);
+}
 function shoot(){
   if(player.lastStand&&player.weapon!=='pistol')return;
   const uiOpen=inventoryOpen||buyStationOpen||bigMapOpen||workshopOpen;
@@ -782,26 +884,31 @@ function shoot(){
   if(now-lastShot<cd)return;
   if(gameMode==='mp'){
     if(w.melee){lastShot=now;mpMelee(w);return;}
-    if(player.weapon==='rifle'){ // primary = 30-round mag, reload with R, unlimited reserve
+    const mag=usesMag(player.weapon); // any primary uses a reloadable magazine; pistol is infinite
+    if(mag){
       if(player.reloadT>0)return;
       if(player.mag<=0){mpStartReload();return;}
     }
     lastShot=now;
-    if(player.weapon==='rifle')player.mag--;
-    for(let i=0;i<w.pellets;i++){const a=player.angle+rand(-w.spread,w.spread);bullets.push({x:player.x,y:player.y,vx:Math.cos(a)*w.spd,vy:Math.sin(a)*w.spd,dmg:w.dmg,life:w.life||1.6,color:w.color,fromPlayer:true,team:'blue',owner:'me',br:w.br});}
+    if(mag)player.mag--;
+    if(w.flame)fireFlame(w);
+    else if(w.chain)fireTesla(w);
+    else for(let i=0;i<w.pellets;i++){const a=player.angle+rand(-w.spread,w.spread);bullets.push({x:player.x,y:player.y,vx:Math.cos(a)*w.spd,vy:Math.sin(a)*w.spd,dmg:w.dmg,life:w.life||1.6,color:w.color,fromPlayer:true,team:'blue',owner:'me',explosive:w.explosive,blast:w.blast,pierce:w.pierce,br:w.br});}
     spawnMuzzle(player.x+Math.cos(player.angle)*22,player.y+Math.sin(player.angle)*22,player.angle);addShake(3.5,0.1);
-    if(player.weapon==='rifle'&&player.mag<=0)mpStartReload();
+    if(mag&&player.mag<=0)mpStartReload();
     return;
   }
   if(w.melee){lastShot=now;meleeAttack(w);return;}
   if(player.ammo[player.weapon]<=0)return;
   lastShot=now;
   if(player.weapon!=='pistol')player.ammo[player.weapon]--;
-  for(let i=0;i<w.pellets;i++){const a=player.angle+rand(-w.spread,w.spread);bullets.push({x:player.x,y:player.y,vx:Math.cos(a)*w.spd,vy:Math.sin(a)*w.spd,dmg:w.dmg,life:w.life||1.6,color:w.color,fromPlayer:true,explosive:w.explosive,blast:w.blast,br:w.br});}
+  if(w.flame)fireFlame(w);
+  else if(w.chain)fireTesla(w);
+  else for(let i=0;i<w.pellets;i++){const a=player.angle+rand(-w.spread,w.spread);bullets.push({x:player.x,y:player.y,vx:Math.cos(a)*w.spd,vy:Math.sin(a)*w.spd,dmg:w.dmg,life:w.life||1.6,color:w.color,fromPlayer:true,explosive:w.explosive,blast:w.blast,pierce:w.pierce,br:w.br});}
   spawnMuzzle(player.x+Math.cos(player.angle)*22,player.y+Math.sin(player.angle)*22,player.angle);
   addShake(3.5,0.1);
-  // Campaign stealth: the silenced pistol stays quiet; any other gun makes noise (escalating alert).
-  if(gameMode==='campaign'&&player.weapon!=='pistol')raiseNoise(player.x,player.y);
+  // Campaign stealth: silenced weapons (pistol, crossbow) stay quiet; loud guns raise the alarm.
+  if(gameMode==='campaign'&&player.weapon!=='pistol'&&!w.silent)raiseNoise(player.x,player.y);
 }
 function meleeAttack(w){
   const range=w.range||50,arc=w.arc||0.8;let hit=false;
@@ -843,7 +950,7 @@ function throwGrenade(){
 }
 function updateGrenades(dt){
   grenadeObjects=grenadeObjects.filter(g=>{g.x+=g.vx*dt;g.y+=g.vy*dt;g.vx*=0.9;g.vy*=0.9;if(isWall(g.x,g.y)){g.vx*=-0.5;g.vy*=-0.5;}g.timer-=dt;if(g.timer<=0&&!g.exploded){g.exploded=true;explodeGrenade(g);return false;}return !g.exploded;});
-  firePatches=firePatches.filter(f=>{f.timer-=dt;enemies.forEach(e=>{if(!e.alive)return;if(Math.hypot(e.x-f.x,e.y-f.y)<f.radius+e.r){e.hp-=45*dt;if(e.hp<=0)killEnemy(e);}});return f.timer>0;});
+  firePatches=firePatches.filter(f=>{f.timer-=dt;const dps=f.dps||45,mp=gameMode==='mp',tgts=mp?bots:enemies;tgts.forEach(e=>{if(!e.alive||(mp&&e.team!=='red'))return;if(Math.hypot(e.x-f.x,e.y-f.y)<f.radius+(e.r||15)){e.hp-=dps*dt;if(mp){e.dmgT=0;if(e.hp<=0)mpKill('me',e);}else if(e.hp<=0)killEnemy(e);}});return f.timer>0;});
 }
 function explodeAt(x,y,radius,dmg,shake){
   spawnExplosion(x,y,Math.max(12,Math.round(radius/5)));addShake(shake||10,0.35);
@@ -1278,7 +1385,10 @@ function updateBullets(dt){
   bullets=bullets.filter(b=>{
     b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
     if(b.life<=0||isWall(b.x,b.y)){if(b.explosive)explodeAt(b.x,b.y,b.blast,b.dmg);else if(isWall(b.x,b.y))spawnBlood(b.x,b.y,3,'#888');return false;}
-    if(b.fromPlayer){for(const e of enemies){if(!e.alive)continue;if(dist(b,e)<e.r+(b.br||4)){if(b.explosive){explodeAt(b.x,b.y,b.blast,b.dmg);}else{spawnBlood(b.x,b.y,6);e.hp-=b.dmg;if(e.hp<=0)killEnemy(e);}return false;}}}
+    if(b.fromPlayer){for(const e of enemies){if(!e.alive)continue;if(dist(b,e)<e.r+(b.br||4)){
+      if(b.explosive){explodeAt(b.x,b.y,b.blast,b.dmg);return false;}
+      if(b.pierce){if(!b.hit)b.hit=new Set();if(b.hit.has(e))continue;b.hit.add(e);spawnBlood(b.x,b.y,6);e.hp-=b.dmg;if(e.hp<=0)killEnemy(e);continue;} // bolt passes through
+      spawnBlood(b.x,b.y,6);e.hp-=b.dmg;if(e.hp<=0)killEnemy(e);return false;}}}
     else{if(dist(b,player)<player.radius+(b.br||4)){if(player.invincible<=0){takeDamage(b.dmg);player.invincible=0.3;addShake(6,0.2);}spawnBlood(b.x,b.y,4,'#880088');return false;}}
     return true;
   });
@@ -1297,7 +1407,7 @@ function spawnPickup(type,x,y,amount,extra){
 }
 function dropAmmoPickup(x,y){
   const pool=player.weapons.filter(w=>!WEAPONS[w].melee&&w!=='pistol');
-  if(pool.length){const w=pool[randInt(0,pool.length-1)];const amt={shotgun:12,rifle:24,sniper:8,machinegun:50,rocket:2}[w]||12;spawnPickup('ammo',x,y,amt,{weapon:w});}
+  if(pool.length){const w=pool[randInt(0,pool.length-1)];const amt={smg:45,shotgun:12,aa12:16,rifle:24,sniper:8,crossbow:6,machinegun:50,flamethrower:100,tesla:15,rocket:2}[w]||12;spawnPickup('ammo',x,y,amt,{weapon:w});}
   else spawnPickup('cash',x,y,60);
 }
 function dropRandomLoot(x,y){
@@ -1649,7 +1759,9 @@ function drawBigMap(){
 function drawBuyStation(){
   if(!buyStationOpen)return;
   const items=getTabItems();
-  const ow=620,oh=110+Math.max(items.length,1)*72,ox=W/2-ow/2,oy=H/2-oh/2,tw=ow/SHOP_TABS.length;
+  // Row height shrinks so even a long tab (e.g. all weapons) fits on screen.
+  const rowH=Math.max(44,Math.min(72,(H-150)/Math.max(items.length,1)));
+  const ow=620,oh=92+Math.max(items.length,1)*rowH,ox=W/2-ow/2,oy=H/2-oh/2,tw=ow/SHOP_TABS.length;
   ctx.fillStyle='rgba(0,0,0,0.97)';ctx.fillRect(ox,oy,ow,oh);
   ctx.strokeStyle='#2ecc71';ctx.lineWidth=2;ctx.strokeRect(ox,oy,ow,oh);
   ctx.font='20px sans-serif';ctx.textAlign='center';ctx.fillText('🧺',W/2-80,oy+28);
@@ -1663,27 +1775,29 @@ function drawBuyStation(){
     ctx.fillText(tab.toUpperCase(),tx+tw/2,ty+17);
   });
   items.forEach((item,i)=>{
-    const ix=ox+12,iy=oy+86+i*72,iw=ow-24;
-    const can=currency>=item.cost&&item.id!=='pistolAmmo';
-    const hov=mouse.x>ix&&mouse.x<ix+iw&&mouse.y>iy&&mouse.y<iy+66;
-    ctx.fillStyle=hov&&can?'#0d2a0d':(can?'#0d0d0d':'#080808');ctx.fillRect(ix,iy,iw,66);
-    ctx.strokeStyle=can?'#2ecc71':'#1a2a1a';ctx.lineWidth=1;ctx.strokeRect(ix,iy,iw,66);
-    ctx.fillStyle=can?'#2ecc71':'#1a3a1a';ctx.fillRect(ix,iy,34,66);
-    ctx.fillStyle=can?'#000':'#333';ctx.font='bold 18px Courier New';ctx.textAlign='center';ctx.fillText(item.id==='pistolAmmo'?'∞':`${i+1}`,ix+17,iy+38);
-    ctx.fillStyle=can?'#fff':'#444';ctx.font='bold 13px Courier New';ctx.textAlign='left';ctx.fillText(item.name,ix+44,iy+22);
-    ctx.fillStyle=item.id==='pistolAmmo'?'#555':(can?'#44ff88':'#1a4a1a');ctx.font='bold 12px Courier New';
-    ctx.fillText(item.id==='pistolAmmo'?'FREE (always)':`£${item.cost}`,ix+44,iy+40);
-    ctx.fillStyle='#555';ctx.font='9px Courier New';ctx.fillText(item.desc,ix+44,iy+56);
+    const ix=ox+12,iy=oy+84+i*rowH,iw=ow-24,ih=rowH-6;
+    const locked=item.type==='weapon'&&!weaponUnlocked(item.id);
+    const can=currency>=item.cost&&item.id!=='pistolAmmo'&&!locked;
+    const hov=mouse.x>ix&&mouse.x<ix+iw&&mouse.y>iy&&mouse.y<iy+ih;
+    ctx.fillStyle=hov&&can?'#0d2a0d':(can?'#0d0d0d':'#080808');ctx.fillRect(ix,iy,iw,ih);
+    ctx.strokeStyle=can?'#2ecc71':'#1a2a1a';ctx.lineWidth=1;ctx.strokeRect(ix,iy,iw,ih);
+    ctx.fillStyle=can?'#2ecc71':'#1a3a1a';ctx.fillRect(ix,iy,34,ih);
+    ctx.fillStyle=can?'#000':'#333';ctx.font='bold 18px Courier New';ctx.textAlign='center';ctx.fillText(locked?'🔒':item.id==='pistolAmmo'?'∞':`${i+1}`,ix+17,iy+ih*0.6);
+    ctx.fillStyle=can?'#fff':'#444';ctx.font='bold 13px Courier New';ctx.textAlign='left';ctx.fillText(item.name,ix+44,iy+ih*0.34);
+    ctx.fillStyle=locked?'#ffaa33':item.id==='pistolAmmo'?'#555':(can?'#44ff88':'#1a4a1a');ctx.font='bold 12px Courier New';
+    ctx.fillText(locked?`🔒 Unlock at Level ${WEAPONS[item.id].unlock}`:item.id==='pistolAmmo'?'FREE (always)':`£${item.cost}`,ix+44,iy+ih*0.6);
+    ctx.fillStyle='#555';ctx.font='9px Courier New';ctx.fillText(item.desc,ix+44,iy+ih*0.85);
   });
   ctx.fillStyle='#333';ctx.font='10px Courier New';ctx.textAlign='center';
-  ctx.fillText('← → switch tabs  |  1-9 quick buy  |  [Enter] or [ESC] close',W/2,oy+oh-10);
+  ctx.fillText('← → switch tabs  |  1-9 quick buy  |  [Enter] or [ESC] close',W/2,oy+oh-8);
 }
 function handleBuyClick(mx,my){
   const items=getTabItems();
-  const ow=620,oh=110+Math.max(items.length,1)*72,ox=W/2-ow/2,oy=H/2-oh/2,tw=ow/SHOP_TABS.length;
+  const rowH=Math.max(44,Math.min(72,(H-150)/Math.max(items.length,1)));
+  const ow=620,oh=92+Math.max(items.length,1)*rowH,ox=W/2-ow/2,oy=H/2-oh/2,tw=ow/SHOP_TABS.length;
   if(mx<ox||mx>ox+ow||my<oy||my>oy+oh){buyStationOpen=false;return;}
   SHOP_TABS.forEach((tab,i)=>{if(mx>ox+i*tw&&mx<ox+(i+1)*tw&&my>oy+52&&my<oy+78)activeTab=tab;});
-  items.forEach((item,i)=>{const ix=ox+12,iy=oy+86+i*72;if(mx>ix&&mx<ix+ow-24&&my>iy&&my<iy+66)buyItem(item);});
+  items.forEach((item,i)=>{const ix=ox+12,iy=oy+84+i*rowH;if(mx>ix&&mx<ix+ow-24&&my>iy&&my<iy+rowH-6)buyItem(item);});
 }
 
 // ── Workshop UI ────────────────────────────────────────────────────────────
@@ -1839,6 +1953,7 @@ function commitRun(died){
   if(globalLevel>saveData.highestLevel)saveData.highestLevel=globalLevel;
   if(score>saveData.bestScore)saveData.bestScore=score;
   bumpChallenge('games',1);
+  addXp(sessionKills*5+globalLevel*20+Math.floor(score/200));
   writeSave();
   sessionCoins=0;sessionKills=0;
 }
@@ -2186,6 +2301,7 @@ function updateStealth(dt){
 function missionComplete(){
   if(mission&&!saveData.campaignDone.includes(mission.id)){saveData.campaignDone.push(mission.id);writeSave();}
   bumpChallenge('stealth',1);
+  addXp(300); // flat mission-clear bonus on top of commitRun's base XP
   commitRun(false);
   state=STATE.WIN; // drawn as mission-complete because gameMode==='campaign'
 }
@@ -2331,7 +2447,7 @@ function drawStealthHUD(){
   ctx.fillStyle='#300';ctx.fillRect(18,H-42,206,12);
   ctx.fillStyle=hpR>0.5?'#2ecc71':hpR>0.25?'#f39c12':'#e74c3c';ctx.fillRect(18,H-42,206*hpR,12);
   ctx.strokeStyle='#444';ctx.lineWidth=1;ctx.strokeRect(18,H-42,206,12);
-  const wq=(player.weapon==='pistol'||player.weapon==='knife');
+  const wq=(player.weapon==='pistol'||player.weapon==='knife'||WEAPONS[player.weapon].silent);
   ctx.fillStyle='#fff';ctx.font='bold 9px Courier New';ctx.textAlign='center';
   ctx.fillText(`HP ${Math.ceil(player.hp)}  ·  ${player.weapon.toUpperCase()} ${wq?'(quiet)':'(LOUD)'}`,121,H-33);
 }
@@ -2568,6 +2684,7 @@ function drawMainMenu(){
   if(menuView==='campaign')drawCampaignSelect();
   else if(menuView==='zombies')drawZombiesMenu();
   else if(menuView==='multiplayer')drawMultiplayerSelect();
+  else if(menuView==='loadout')drawLoadout();
   else drawModeTiles();
 }
 
@@ -2592,11 +2709,68 @@ function drawModeTiles(){
   const r=rankFor(saveData.kills);
   ctx.fillStyle=C.GOLD;ctx.font=mFont(14,'bold');ctx.textAlign='center';ctx.fillText('CHOOSE YOUR OPERATION',W/2,184);
   ctx.fillStyle=r.color;ctx.font=mFont(12,'bold');ctx.fillText(`RANK: ${r.name.toUpperCase()}  ·  ${saveData.kills} KILLS  ·  🪙 ${saveData.coins}`,W/2,206);
+  const _xp=xpProgress(saveData.xp);
+  ctx.fillStyle=C.GOLD;ctx.font=mFont(11,'bold');ctx.fillText(`⭐ LEVEL ${_xp.level}${_xp.max?' · MAX':'  ·  '+_xp.into+' / '+_xp.need+' XP'}`,W/2,222);
   const done=saveData.campaignDone.length,total=CAMPAIGN.flatMap(c=>c.missions).length;
   const tw=Math.min(300,(W-160)/3),th=260,g=28,totalW=tw*3+g*2,x0=W/2-totalW/2,ty=240;
   drawBigTile(x0,           ty,tw,th,'CAMPAIGN',  'STEALTH OPS',  `Infiltrate · ${done}/${total} done`, '#3fa9ff','#0a1822',()=>{menuView='campaign';});
   drawBigTile(x0+tw+g,      ty,tw,th,'ZOMBIES',   'WAVE SURVIVAL','20 levels · 5 maps',                 '#e63946','#1a0808',()=>{menuView='zombies';});
   drawBigTile(x0+(tw+g)*2,  ty,tw,th,'MULTIPLAYER','BOT PvP',     '4v4 · objective modes',              '#ffd24a','#1a1508',()=>{menuView='multiplayer';});
+}
+
+// ── MP Loadout screen ────────────────────────────────────────────────────────
+let loadoutSlot='primary';
+const LOADOUT_SLOTS=[['primary','PRIMARY'],['secondary','SECONDARY'],['lethal','LETHAL'],['tactical','TACTICAL']];
+function loadoutOptions(slot){
+  if(slot==='primary')return ALL_WEAPONS.filter(w=>!WEAPONS[w].melee&&w!=='pistol');
+  if(slot==='secondary')return ['pistol'];
+  if(slot==='lethal')return ['frag','molotov'];
+  return ['flashbang'];
+}
+function loadoutDesc(id){
+  const w=WEAPONS[id];
+  if(w){
+    if(w.flame)return 'Fire stream · crowd control';
+    if(w.chain)return 'Lightning chains between targets';
+    if(w.pierce)return 'Silent · pierces enemies';
+    if(w.explosive)return 'Explosive splash damage';
+    return `DMG ${Math.round(w.dmg)} · ${w.pellets>1?w.pellets+' pellets':'RoF '+(1/w.cd).toFixed(1)+'/s'}`;
+  }
+  return {frag:'Timed explosive',molotov:'Ground fire patch',flashbang:'Stuns nearby enemies'}[id]||'';
+}
+function drawLoadout(){
+  mButton(24,150,92,28,'‹ BACK',{id:'lo_back',fg:C.TEXT_DIM,fs:12,r:8,action:()=>{menuView='multiplayer';}});
+  ctx.fillStyle=C.GOLD;ctx.shadowColor=C.GOLD;ctx.shadowBlur=14;ctx.font=mFont(24,'bold');ctx.textAlign='center';ctx.fillText('LOADOUT',W/2,172);ctx.shadowBlur=0;
+  // Account level + XP bar
+  const xp=xpProgress(saveData.xp),bw=Math.min(460,W-160),bx=W/2-bw/2,by=190;
+  ctx.fillStyle=C.TEXT;ctx.font=mFont(12,'bold');ctx.textAlign='left';ctx.fillText('LEVEL '+xp.level,bx,by-3);
+  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(10);ctx.textAlign='right';ctx.fillText(xp.max?'MAX LEVEL':xp.into+' / '+xp.need+' XP',bx+bw,by-3);
+  fillRR(bx,by,bw,8,4,C.PANEL);fillRR(bx,by,Math.max(2,bw*xp.frac),8,4,C.GOLD);strokeRR(bx,by,bw,8,4,C.BORDER,1);
+  // Slot tabs
+  const sw=Math.min(120,(Math.min(540,W-120)-24)/4),sgap=8,stotal=4*sw+3*sgap,sx0=W/2-stotal/2,sy=212;
+  LOADOUT_SLOTS.forEach(([id,label],i)=>{const x=sx0+i*(sw+sgap),active=loadoutSlot===id;
+    mButton(x,sy,sw,30,label,{id:'lo_slot_'+id,active,activeFill:C.BLUE,activeBorder:C.BLUE_SOFT,activeFg:'#04121f',glow:active?C.BLUE:C.BORDER_HI,fs:11,r:8,action:()=>{loadoutSlot=id;}});});
+  // Current loadout summary
+  const lo=saveData.loadout;
+  ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(10);ctx.textAlign='center';
+  ctx.fillText(`PRIMARY ${lo.primary.toUpperCase()}  ·  SECONDARY ${lo.secondary.toUpperCase()}  ·  LETHAL ${lo.lethal.toUpperCase()}  ·  TACTICAL ${lo.tactical.toUpperCase()}`,W/2,260);
+  // Options grid for the active slot
+  const opts=loadoutOptions(loadoutSlot),cols=2,ow=Math.min(280,(W-120)/2-6),oh=46,ogap=12;
+  const gx0=W/2-(cols*ow+(cols-1)*ogap)/2,gy0=276;
+  opts.forEach((id,i)=>{
+    const col=i%cols,row=Math.floor(i/cols),x=gx0+col*(ow+ogap),y=gy0+row*(oh+ogap);
+    const isWeapon=!!WEAPONS[id],locked=isWeapon&&!weaponUnlocked(id),selected=lo[loadoutSlot]===id;
+    const t=hoverAmt('lo_opt_'+id,mHov(x,y,ow,oh)&&!locked);
+    panel(x,y,ow,oh,{r:8,top:selected?mix(C.PANEL_HI,C.BLUE,0.22):mix(C.PANEL_HI,C.BLUE,t*0.14),bottom:C.PANEL,border:selected?C.BLUE_SOFT:mix(C.BORDER,C.BLUE,t),lw:selected?2:1});
+    const sw2=WEAPONS[id]?WEAPONS[id].color:({frag:'#aaaaaa',molotov:'#cc4400',flashbang:'#aaaaff'}[id]||'#888');
+    fillRR(x+8,y+oh/2-9,5,18,2,locked?'#333':sw2);
+    ctx.textAlign='left';ctx.fillStyle=locked?C.TEXT_FAINT:C.TEXT;ctx.font=mFont(13,'bold');ctx.fillText(id.toUpperCase(),x+22,y+20);
+    if(locked){ctx.fillStyle='#ffaa33';ctx.font=mFont(9,'bold');ctx.fillText('🔒 Unlock at Level '+WEAPONS[id].unlock,x+22,y+35);}
+    else{ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(9);ctx.fillText(loadoutDesc(id),x+22,y+35);}
+    if(selected){ctx.textAlign='right';ctx.fillStyle=C.BLUE_SOFT;ctx.font=mFont(10,'bold');ctx.fillText('✓ EQUIPPED',x+ow-12,y+oh/2+4);}
+    if(!locked)mReg(x,y,ow,oh,()=>{saveData.loadout[loadoutSlot]=id;writeSave();});
+  });
+  ctx.fillStyle=C.TEXT_FAINT;ctx.font=mFont(10);ctx.textAlign='center';ctx.fillText('Level up to unlock more weapons — earn XP in every mode',W/2,H-28);
 }
 function drawMiniChallenge(x,y,w,h,ch){
   const c=saveData.challenges,prog=Math.min(c.progress[ch.id]||0,ch.target),done=!!c.claimed[ch.id];
@@ -2624,6 +2798,7 @@ function drawMenuChallenges(y0){
 }
 function drawMultiplayerSelect(){
   backButton();
+  mButton(W-186,150,162,30,'✦ EDIT LOADOUT',{id:'mp_loadout',fg:C.BLUE_SOFT,glow:C.BLUE,fs:12,r:8,action:()=>{menuView='loadout';}});
   ctx.fillStyle=C.GOLD;ctx.shadowColor=C.GOLD;ctx.shadowBlur=14;ctx.font=mFont(24,'bold');ctx.textAlign='center';ctx.fillText('MULTIPLAYER',W/2,176);ctx.shadowBlur=0;
   ctx.fillStyle=C.TEXT_DIM;ctx.font=mFont(11);ctx.fillText('You + allied bots (BLUE) vs enemy bots (RED). Respawns on.',W/2,200);
   const cards=[['tdm','TEAM DEATHMATCH'],['dom','DOMINATION'],['hp','HARDPOINT'],['ctf','CAPTURE THE FLAG']];
@@ -3159,9 +3334,12 @@ function updateBots(dt){
 function updateMpBullets(dt){
   bullets=bullets.filter(b=>{
     b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
-    if(b.life<=0||isWall(b.x,b.y))return false;
-    const bteam=b.team||(b.fromPlayer?'blue':'red');
-    for(const o of bots){if(!o.alive||o.team===bteam)continue;if(Math.hypot(b.x-o.x,b.y-o.y)<15+(b.br||4)){o.hp-=b.dmg;o.dmgT=0;spawnBlood(o.x,o.y,6);if(o.hp<=0)mpKill(b.owner||(b.fromPlayer?'me':null),o);return false;}}
+    if(b.life<=0||isWall(b.x,b.y)){if(b.explosive&&bteamOf(b)==='blue')mpExplode(b.x,b.y,b.blast,b.dmg);return false;}
+    const bteam=bteamOf(b);
+    for(const o of bots){if(!o.alive||o.team===bteam)continue;if(Math.hypot(b.x-o.x,b.y-o.y)<15+(b.br||4)){
+      if(b.explosive){if(bteam==='blue')mpExplode(b.x,b.y,b.blast,b.dmg);return false;}
+      if(b.pierce){if(!b.hit)b.hit=new Set();if(b.hit.has(o))continue;b.hit.add(o);o.hp-=b.dmg;o.dmgT=0;spawnBlood(o.x,o.y,6);if(o.hp<=0)mpKill(b.owner||(b.fromPlayer?'me':null),o);continue;}
+      o.hp-=b.dmg;o.dmgT=0;spawnBlood(o.x,o.y,6);if(o.hp<=0)mpKill(b.owner||(b.fromPlayer?'me':null),o);return false;}}
     if(bteam==='red'&&playerDownT<=0&&Math.hypot(b.x-player.x,b.y-player.y)<player.radius+(b.br||4)){if(player.invincible<=0){if(player.hp-b.dmg<=0&&b.owner&&b.owner.team){b.owner.kills=(b.owner.kills||0)+1;b.owner.points=(b.owner.points||0)+100;}takeDamage(b.dmg);player.invincible=0.25;addShake(5,0.15);}spawnBlood(b.x,b.y,4);return false;}
     return true;
   });
@@ -3222,6 +3400,7 @@ function mpCommitStats(won,bonus){
   const mp=saveData.mp;
   mp.kills+=mpMe.kills;mp.deaths+=mpMe.deaths;mp.points+=mpMe.points;mp.matches++;if(won)mp.wins++;
   if(mpMe.points>mp.best.points)mp.best={kills:mpMe.kills,deaths:mpMe.deaths,points:mpMe.points};
+  addXp(mpMe.kills*10+(won?200:80)+Math.floor(mpMe.points/5));
   writeSave();
 }
 function mpEnd(){
@@ -3276,12 +3455,13 @@ function drawMpHUD(){
   ctx.strokeStyle='#444';ctx.lineWidth=1;ctx.strokeRect(18,H-42,206,12);
   ctx.fillStyle='#fff';ctx.font='bold 9px Courier New';ctx.textAlign='center';ctx.fillText(`HP ${Math.max(0,Math.ceil(player.hp))}  ·  ${player.weapon.toUpperCase()}`,121,H-33);
   // Ammo / reload (bottom-right) + grenade counts
-  const ammoTxt=player.weapon==='rifle'?(player.reloadT>0?'RELOADING…':player.mag+' / ∞'):(player.weapon==='knife'?'KNIFE — 1-shot':'PISTOL — ∞');
+  const mag=usesMag(player.weapon),empty=mag&&player.mag<=0&&player.reloadT<=0;
+  const ammoTxt=mag?(player.reloadT>0?'RELOADING…':player.mag+' / ∞'):(player.weapon==='knife'?'KNIFE — 1-shot':'PISTOL — ∞');
   ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(W-180,H-46,166,32);
-  ctx.fillStyle=player.weapon==='rifle'&&player.mag===0&&player.reloadT<=0?'#ff6666':'#fff';ctx.font='bold 13px Courier New';ctx.textAlign='right';ctx.fillText(ammoTxt,W-22,H-31);
+  ctx.fillStyle=empty?'#ff6666':'#fff';ctx.font='bold 13px Courier New';ctx.textAlign='right';ctx.fillText(`${player.weapon.toUpperCase()} ${ammoTxt}`,W-22,H-31);
   ctx.fillStyle='#9aa0a6';ctx.font='9px Courier New';ctx.textAlign='left';ctx.fillText(`R reload · G nade · 5 suicide`,W-174,H-31);
-  ctx.textAlign='right';ctx.fillStyle='#cdd';ctx.font='10px Courier New';ctx.fillText(`💣${player.grenades.frag}  ✦${player.grenades.flashbang} (${player.selectedGrenade==='frag'?'FRAG':'FLASH'})`,W-22,H-52);
-  if(player.weapon==='rifle'&&player.mag===0&&player.reloadT<=0){ctx.fillStyle='#ff6666';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('PRESS R TO RELOAD',W/2,H-78);}
+  ctx.textAlign='right';ctx.fillStyle='#cdd';ctx.font='10px Courier New';ctx.fillText(`💣${player.grenades.frag+player.grenades.molotov}  ✦${player.grenades.flashbang} (${player.selectedGrenade.toUpperCase()})`,W-22,H-52);
+  if(empty){ctx.fillStyle='#ff6666';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('PRESS R TO RELOAD',W/2,H-78);}
   if(player.carryFlag){ctx.fillStyle='#ffd24a';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('🚩 You have the enemy flag — get it home!',W/2,H-60);}
   if(playerDownT>0){ctx.fillStyle='rgba(120,0,0,0.45)';ctx.fillRect(0,0,W,H);ctx.fillStyle='#fff';ctx.font='bold 40px Courier New';ctx.textAlign='center';ctx.fillText('RESPAWNING',W/2,H/2-10);ctx.fillStyle='#ffd24a';ctx.font='bold 30px Courier New';ctx.fillText(Math.ceil(playerDownT)+'s',W/2,H/2+30);}
 }
@@ -3304,9 +3484,10 @@ function startMultiplayer(modeId){
   mpTheme=randInt(0,MAPS.length-1);
   buildArena(mpTheme);setupMpObjectives();
   initPlayer();
-  player.weapons=['knife','pistol','rifle'];player.weapon='rifle';player.ammo.rifle=Infinity;
-  player.magMax=30;player.mag=30;player.reloadT=0;player.dmgT=99;
-  player.grenades={frag:2,molotov:0,flashbang:2};player.selectedGrenade='frag';
+  const lo=resolveLoadout();
+  player.weapons=['knife','pistol',lo.primary];player.weapon=lo.primary;player.ammo[lo.primary]=Infinity;
+  player.magMax=MAG_SIZE[lo.primary]||30;player.mag=player.magMax;player.reloadT=0;player.dmgT=99;
+  player.grenades={frag:lo.lethal==='frag'?2:0,molotov:lo.lethal==='molotov'?2:0,flashbang:2};player.selectedGrenade=lo.lethal;
   spawnBots();
   const ps=mpSpawnPos('blue');player.x=ps.x;player.y=ps.y;
   mpCommitted=false;startCountdown=5;
@@ -3352,7 +3533,7 @@ function loop(now){
     else{drawWorld(camX,camY);drawDebris(camX,camY);drawMapObjects(camX,camY);}
     if(gameMode==='mp')drawMpZones(camX,camY);
     drawBuiltWalls(camX,camY);drawDeployables(camX,camY);drawAirBombs(camX,camY);drawPickups(camX,camY);drawParticles(camX,camY);
-    drawGrenades(camX,camY);drawBullets(camX,camY);
+    drawGrenades(camX,camY);drawBullets(camX,camY);drawArcs(camX,camY);
     enemies.forEach(e=>drawEnemy(e,camX,camY));
     if(gameMode==='mp')bots.forEach(b=>drawBot(b,camX,camY));
     if(!(gameMode==='mp'&&playerDownT>0))drawPlayer(camX,camY);
