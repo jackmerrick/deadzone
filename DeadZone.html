@@ -939,7 +939,7 @@ let bullets=[],lastShot=0,arcs=[]; // arcs = transient tesla lightning segments
 // A weapon that draws from a reloadable magazine in MP (everything except pistol/melee).
 function usesMag(wid){return wid!=='pistol'&&!WEAPONS[wid].melee;}
 // Valid targets for area/chain weapons, unified across modes (zombies vs MP red bots).
-function hostiles(){return gameMode==='mp'?bots.filter(o=>o.alive&&o.team==='red'):enemies.filter(o=>o.alive);}
+function hostiles(){return gameMode==='mp'?bots.filter(o=>o.alive&&o.team==='red'&&!(o.spawnProt>0)):enemies.filter(o=>o.alive);}
 function damageHostile(o,dmg){
   o.hp-=dmg;spawnBlood(o.x,o.y,4);popDmg(o.x,o.y,dmg);
   const dead=o.hp<=0;
@@ -1072,6 +1072,7 @@ function explodeGrenade(g){
   if(gameMode==='mp'){ // thrower team (player=BLUE, or a bot via g.team) hits the opposing team
     const gt=g.team||'blue',foe=gt==='blue'?'red':'blue',killer=g.owner||(gt==='blue'?'me':null);
     if(g.type==='flashbang'){spawnExplosion(g.x,g.y,8);for(const o of bots){if(o.alive&&o.team===foe&&!(o.spawnProt>0)&&Math.hypot(o.x-g.x,o.y-g.y)<240)o.stun=Math.max(o.stun||0,3.5);}if(foe==='blue'&&playerDownT<=0&&Math.hypot(player.x-g.x,player.y-g.y)<240)triggerFlash('255,255,255',0.6);return;}
+    if(g.type==='molotov'){spawnExplosion(g.x,g.y,12);firePatches.push({x:g.x,y:g.y,radius:95,timer:6});return;} // fire DoT (firePatches MP-update damages RED) — bots never throw molotov
     spawnExplosion(g.x,g.y,16);spawnSmoke(g.x,g.y,4);addLight(g.x,g.y,200,'rgba(255,160,60,A?)',0.18);sndExplosion(1);addShake(11,0.35);
     for(const o of bots){if(!o.alive||o.team!==foe||o.spawnProt>0)continue;const d=Math.hypot(o.x-g.x,o.y-g.y);if(d<160){o.hp-=120*(1-d/160);o.dmgT=0;botHurt(o,g.x,g.y);if(o.hp<=0)mpKill(killer,o);}}
     if(foe==='blue'&&playerDownT<=0){const d=Math.hypot(player.x-g.x,player.y-g.y);if(d<160&&player.invincible<=0){takeDamage(120*(1-d/160));player.invincible=0.25;addShake(7,0.25);}}
@@ -1415,7 +1416,7 @@ function spawnEnemy(type,near){
   const mult=diffMult();
   let hp=tmpl.hp*mult,r=tmpl.r;
   if(type==='boss'){const g=zMode==='bossrush'?Math.min(globalLevel-1,3):Math.min(Math.ceil(globalLevel/5)-1,3);hp=[900,1800,3200,5500][g];r=[42,54,66,82][g];if(zMode==='bossrush')hp*=1+(globalLevel-1)*0.28;}
-  const spd=tmpl.spd*(1+(globalLevel-1)*0.03);
+  const spd=tmpl.spd*(1+Math.min(globalLevel-1,15)*0.03); // cap speed scaling (+45%) so deep-endless runners stay outrunnable; HP/dmg/count still ramp forever
   enemies.push({x:ex,y:ey,type,hp,maxHp:hp,spd,dmg:tmpl.dmg*(1+(globalLevel-1)*0.08),r,color:tmpl.color,val:tmpl.val,atkCd:0,atkRate:tmpl.atkRate,angle:0,wobble:rand(0,Math.PI*2),alive:true,stunned:0,
     ranged:!!tmpl.ranged,boomer:!!tmpl.boomer,armored:!!tmpl.armored,screamer:!!tmpl.screamer,summoner:!!tmpl.summoner,summonCd:rand(4,7),baseSpd:spd,enrageT:0});
 }
@@ -1456,7 +1457,7 @@ function updateEnemies(dt){
   enemies.forEach(e=>{
     if(!e.alive)return;e.wobble+=dt*3.5;
     if(e.stunned>0){e.stunned-=dt;return;}
-    const dx=player.x-e.x,dy=player.y-e.y,d=Math.hypot(dx,dy);
+    const dx=player.x-e.x,dy=player.y-e.y,d=Math.hypot(dx,dy)||1; // guard exact overlap (d=0 → NaN softlock)
     let mx=dx/d,my=dy/d;
     if(isWall(e.x+mx*40,e.y))mx=0;if(isWall(e.x,e.y+my*40))my=0;
     if(mx===0&&my===0){mx=dy/d;my=-dx/d;}
@@ -1467,7 +1468,7 @@ function updateEnemies(dt){
     if(e.type==='spitter'&&d>90&&d<320&&e.atkCd<=0){const a=Math.atan2(player.y-e.y,player.x-e.x);bullets.push({x:e.x,y:e.y,vx:Math.cos(a)*200,vy:Math.sin(a)*200,dmg:e.dmg,life:2.2,color:'#cc00ff',fromPlayer:false,br:7});e.atkCd=e.atkRate;}
     if(e.ranged&&d>70&&d<430&&e.atkCd<=0){const a=Math.atan2(player.y-e.y,player.x-e.x)+rand(-0.05,0.05);bullets.push({x:e.x,y:e.y,vx:Math.cos(a)*430,vy:Math.sin(a)*430,dmg:e.dmg,life:1.6,color:'#ffdd66',fromPlayer:false,br:4});spawnMuzzle(e.x+Math.cos(a)*16,e.y+Math.sin(a)*16,a);e.atkCd=e.atkRate;}
     // Screamer: pulse-enrages nearby zombies (speed boost) and summons a runner
-    if(e.screamer){e.enrageT-=dt;e.summonCd-=dt;
+    if(e.screamer){e.summonCd-=dt;
       if(e.summonCd<=0){e.summonCd=rand(6,9);spawnExplosion(e.x,e.y,6);addNotif('🔊 A Screamer is enraging the horde!','#ff66cc',1.5);
         enemies.forEach(o=>{if(o.alive&&o!==e&&Math.hypot(o.x-e.x,o.y-e.y)<260){o.spd=(o.baseSpd||o.spd)*1.5;o.enrageT=4;}});
         if(aliveCount()<60)spawnEnemy('runner',e);}}
@@ -1619,7 +1620,7 @@ function drawEnemy(e,camX,camY){
   ctx.rotate(e.angle+Math.PI);const wb=Math.sin(e.wobble)*2.5;
   if(e.stunned>0)ctx.globalAlpha=0.5+Math.sin(e.stunned*20)*0.3;
   if(e.type==='boss'){
-    const g=Math.min(Math.ceil(globalLevel/5)-1,3);
+    const g=zMode==='bossrush'?Math.min(globalLevel-1,3):Math.min(Math.ceil(globalLevel/5)-1,3); // match spawn-tier so Boss Rush bosses render their real tier
     const bc=['#1a0000','#001a00','#00001a','#1a001a'][g],gc=['#ff0000','#00ff44','#4444ff','#ff00ff'][g];
     ctx.fillStyle=bc;ctx.beginPath();ctx.arc(0,wb,e.r,0,Math.PI*2);ctx.fill();
     ctx.fillStyle=gc+'33';ctx.beginPath();ctx.arc(0,wb,e.r*0.65,0,Math.PI*2);ctx.fill();
@@ -2129,7 +2130,7 @@ function commitRun(died){
   if(globalLevel>saveData.highestLevel)saveData.highestLevel=globalLevel;
   if(score>saveData.bestScore)saveData.bestScore=score;
   bumpChallenge('games',1);
-  addXp(sessionKills*5+globalLevel*20+Math.floor(score/200));
+  addXp(sessionKills*6+globalLevel*25+Math.floor(score/170));
   writeSave();
   sessionCoins=0;sessionKills=0;
 }
@@ -3478,21 +3479,21 @@ function spawnBots(){
   for(let i=0;i<mpTeamSize;i++){const b=makeBot('red'); b.name=pool.pop()||('E'+(i+1));bots.push(b);}
   if(mpMode==='ctf')bots.forEach((b,i)=>b.role=(i%2===0)?'attack':'defend');
 }
-function respawnBot(b){const s=mpSpawnPos(b.team);b.alive=true;b.hp=b.maxHp;b.x=s.x;b.y=s.y;b.respawnT=0;b.carryFlag=null;b.seen=null;b.react=0;b.hitT=0;b.nades=2;b.nadeCd=rand(4,9);b.spawnProt=2.5;}
+function respawnBot(b){const s=mpSpawnPos(b.team);b.alive=true;b.hp=b.maxHp;b.x=s.x;b.y=s.y;b.respawnT=0;b.carryFlag=null;b.seen=null;b.react=0;b.hitT=0;b.stun=0;b.nades=2;b.nadeCd=rand(4,9);b.spawnProt=2.5;}
 
-function mpPlayerDown(){if(playerDownT>0)return;playerDownT=MP_RESPAWN;mpMe.deaths++;mpMe.streak=0;if(mpMode==='tdm')mpScore.red++;mpFlagDropFrom(player);addShake(12,0.4);addNotif('You were killed — respawning…','#ff8585',3);}
+function mpPlayerDown(){if(playerDownT>0)return;playerDownT=MP_RESPAWN;mpMe.deaths++;mpMe.streak=0;if(mpMode==='tdm')mpScore.red++;if(mpMode==='kc')mpTags.push({x:player.x,y:player.y,team:'blue',life:12,pulse:0});mpFlagDropFrom(player);addShake(12,0.4);addNotif('You were killed — respawning…','#ff8585',3);}
 function mpRespawnPlayer(){const s=mpSpawnPos('blue');player.hp=player.maxHp;player.x=s.x;player.y=s.y;player.invincible=2;player.lastStand=false;player.dmgT=99;player.mag=player.magMax;player.reloadT=0;playerDownT=0;if(mpMode==='gungame')gunGameEquip(mpMe.tier||0);}
 function mpStartReload(){if(player.reloadT>0||player.mag>=player.magMax)return;player.reloadT=1.4;sndReload();addNotif('Reloading…','#9aa0a6',1);}
 function mpMelee(w){ // knife = one-shot kill
   const range=(w.range||54)+16,arc=w.arc||1.0;
-  for(const o of bots){if(!o.alive||o.team==='blue')continue;if(dist(player,o)>range)continue;if(Math.abs(angDiff(Math.atan2(o.y-player.y,o.x-player.x),player.angle))>arc)continue;spawnBlood(o.x,o.y,16);mpKill('me',o);break;}
+  for(const o of bots){if(!o.alive||o.team==='blue'||o.spawnProt>0)continue;if(dist(player,o)>range)continue;if(Math.abs(angDiff(Math.atan2(o.y-player.y,o.x-player.x),player.angle))>arc)continue;spawnBlood(o.x,o.y,16);mpKill('me',o);break;}
   for(let i=0;i<7;i++){const a=player.angle+rand(-arc,arc),s=rand(3,7);particles.push({x:player.x+Math.cos(a)*range*0.6,y:player.y+Math.sin(a)*range*0.6,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:0.18,maxLife:0.18,r:rand(2,4),color:'#e8e8f0'});}
   addShake(3,0.08);
 }
 
-function mpNearestEnemy(b){let best=null,bd=1e9;
-  for(const o of bots){if(!o.alive||o.team===b.team)continue;const d=Math.hypot(o.x-b.x,o.y-b.y);if(d<bd){bd=d;best=o;}}
-  if(b.team==='red'&&playerDownT<=0){const d=Math.hypot(player.x-b.x,player.y-b.y);if(d<bd){bd=d;best=player;}}
+function mpNearestEnemy(b){let best=null,bd=1e9; // ignore spawn-protected enemies (can't be hurt)
+  for(const o of bots){if(!o.alive||o.team===b.team||o.spawnProt>0)continue;const d=Math.hypot(o.x-b.x,o.y-b.y);if(d<bd){bd=d;best=o;}}
+  if(b.team==='red'&&playerDownT<=0&&player.invincible<=0){const d=Math.hypot(player.x-b.x,player.y-b.y);if(d<bd){bd=d;best=player;}}
   return {tgt:best,d:bd};
 }
 // Returns a {x,y} goal, or null = "nothing to do, roam freely" (sets b.roamC for biased roaming)
@@ -3556,7 +3557,8 @@ function updateBots(dt){
     const canSee=e.tgt&&e.d<540&&losClear(b.x,b.y,e.tgt.x,e.tgt.y);
     if(canSee){
       // Spotting delay: a fresh sighting takes a reaction beat before the bot can fire.
-      if(b.seen!==e.tgt){b.seen=e.tgt;b.react=rand(D.react[0],D.react[1]);}
+      if(!b.seen){b.react=rand(D.react[0],D.react[1]);} // reaction beat only on first acquiring a target (not when switching between equidistant foes)
+      b.seen=e.tgt;
       if(b.react>0)b.react-=dt;
       const hurt=b.hp<b.maxHp*0.35; // wounded → kite away to regen
       let tx,ty;
@@ -3690,7 +3692,7 @@ function mpCommitStats(won,bonus){
   const mp=saveData.mp;
   mp.kills+=mpMe.kills;mp.deaths+=mpMe.deaths;mp.points+=mpMe.points;mp.matches++;if(won)mp.wins++;
   if(mpMe.points>mp.best.points)mp.best={kills:mpMe.kills,deaths:mpMe.deaths,points:mpMe.points};
-  addXp(mpMe.kills*10+(won?200:80)+Math.floor(mpMe.points/5));
+  addXp(mpMe.kills*12+(won?260:100)+Math.floor(mpMe.points/4));
   writeSave();
 }
 function mpEnd(){
